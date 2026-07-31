@@ -1,7 +1,11 @@
+import CoreMIDI
 import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var monitor: MIDIMonitor
+    @AppStorage("showInputLog") private var showInputLog = true
+    @AppStorage("showOutputLog") private var showOutputLog = true
+    @AppStorage("showRouteInspector") private var showRouteInspector = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,9 +18,19 @@ struct ContentView: View {
             Divider()
 
             ScrollView {
-                LazyVStack(spacing: 10) {
-                    ForEach(monitor.channelStates) { channelState in
-                        ChannelRowView(channelState: channelState)
+                VStack(spacing: 10) {
+                    channelGrid
+
+                    if showRouteInspector {
+                        diagnosticPanel
+                    }
+
+                    if showInputLog {
+                        inputLogPanel
+                    }
+
+                    if showOutputLog {
+                        outputLogPanel
                     }
                 }
                 .padding(16)
@@ -37,6 +51,22 @@ struct ContentView: View {
                 endPoint: .bottomTrailing
             )
         )
+    }
+
+    private var channelGrid: some View {
+        HStack(alignment: .top, spacing: 12) {
+            channelColumn(states: Array(monitor.channelStates.prefix(8)))
+            channelColumn(states: Array(monitor.channelStates.suffix(8)))
+        }
+    }
+
+    private func channelColumn(states: [ChannelState]) -> some View {
+        VStack(spacing: 10) {
+            ForEach(states) { channelState in
+                ChannelRowView(channelState: channelState)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
     private var header: some View {
@@ -100,6 +130,260 @@ struct ContentView: View {
         .padding(.vertical, 10)
         .background(Color.black.opacity(0.12))
     }
+
+    private var inputLogPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Input Log")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("Newest events at the bottom. Text can be selected and copied.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(monitor.inputLogText)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(12)
+                        .id("input-log-bottom")
+                }
+                .frame(minHeight: 180, maxHeight: 180)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.black.opacity(0.28))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                )
+                .onAppear {
+                    proxy.scrollTo("input-log-bottom", anchor: .bottom)
+                }
+                .onChange(of: monitor.inputLogEntries.count) { _, _ in
+                    proxy.scrollTo("input-log-bottom", anchor: .bottom)
+                }
+            }
+        }
+        .background(Color.black.opacity(0.10))
+    }
+
+    private var outputLogPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Output Log")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("Shows MIDI bytes actually sent by MIDImunger.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(monitor.outputLogText)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(12)
+                        .id("output-log-bottom")
+                }
+                .frame(minHeight: 180, maxHeight: 180)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.black.opacity(0.28))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                )
+                .onAppear {
+                    proxy.scrollTo("output-log-bottom", anchor: .bottom)
+                }
+                .onChange(of: monitor.outputLogEntries.count) { _, _ in
+                    proxy.scrollTo("output-log-bottom", anchor: .bottom)
+                }
+            }
+        }
+        .background(Color.black.opacity(0.10))
+    }
+
+    private var diagnosticPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("MIDI Route Inspector")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text("Selected Thru: \(monitor.selectedDestinationDiagnosticText)")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white)
+                .textSelection(.enabled)
+
+            HStack(alignment: .top, spacing: 12) {
+                diagnosticColumn(title: "Input Sources", endpoints: monitor.sourceDiagnostics)
+                diagnosticColumn(title: "Output Destinations", endpoints: monitor.destinationDiagnostics)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.white.opacity(0.07))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+        )
+    }
+
+    private func diagnosticColumn(title: String, endpoints: [MIDIRouteDiagnostic]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            if endpoints.isEmpty {
+                Text("None detected.")
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(endpoints) { endpoint in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Text(endpoint.name)
+                                .font(.system(size: 12, weight: endpoint.isSelected ? .semibold : .regular, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+
+                            if endpoint.isSelected {
+                                Text("Selected")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.green)
+                            }
+
+                            if endpoint.activity?.isPerformanceRecentlyActive == true {
+                                Text("Playing")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.green)
+                            } else if endpoint.activity?.isRecentlyActive == true {
+                                Text("Background")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.yellow)
+                            }
+                        }
+
+                        Text("endpoint \(endpoint.endpointUniqueID)  entity \(diagnosticValue(endpoint.entityUniqueID))  device \(diagnosticValue(endpoint.deviceUniqueID))")
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+
+                        if let activity = endpoint.activity {
+                            Text("events \(activity.totalEventCount)  musical \(activity.performanceEventCount)  active-sense \(activity.activeSensingCount)  repeats \(activity.repeatWarningCount)")
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+
+                            if let lastPerformanceTimestamp = activity.lastPerformanceTimestamp,
+                               let lastPerformanceMessage = activity.lastPerformanceMessage {
+                                Text("last musical \(lastPerformanceTimestamp)")
+                                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+
+                                Text(lastPerformanceMessage)
+                                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.88))
+                                    .lineLimit(2)
+                                    .truncationMode(.tail)
+                                    .textSelection(.enabled)
+                            } else {
+                                Text("No musical/controller activity this session.")
+                                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            if let lastRepeatWarningTimestamp = activity.lastRepeatWarningTimestamp,
+                               let lastRepeatWarningMessage = activity.lastRepeatWarningMessage {
+                                Text("last repeat \(lastRepeatWarningTimestamp)")
+                                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.orange)
+                                    .textSelection(.enabled)
+
+                                Text(lastRepeatWarningMessage)
+                                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(2)
+                                    .truncationMode(.tail)
+                                    .textSelection(.enabled)
+                            }
+
+                            Text("last any \(activity.lastAnyTimestamp)")
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+
+                            Text(activity.lastAnyMessage)
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .truncationMode(.tail)
+                                .textSelection(.enabled)
+
+                            if !activity.recentMessages.isEmpty {
+                                Text("recent history")
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+
+                                ForEach(activity.recentMessages) { message in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Text(message.isPerformance ? "M" : "B")
+                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                            .foregroundStyle(message.isRepeatWarning ? .orange : (message.isPerformance ? .green : .yellow))
+                                            .frame(width: 10, alignment: .leading)
+
+                                        Text("\(message.timestamp)  \(message.text)")
+                                            .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                            .foregroundStyle(message.isRepeatWarning ? .orange : .secondary)
+                                            .lineLimit(2)
+                                            .truncationMode(.tail)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                            }
+                        } else {
+                            Text("No MIDI activity this session.")
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black.opacity(0.20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+
+    private func diagnosticValue(_ value: MIDIUniqueID?) -> String {
+        value.map(String.init) ?? "-"
+    }
 }
 
 private struct HeaderPanel: View {
@@ -143,6 +427,14 @@ private struct DestinationPanel: View {
                 .foregroundStyle(.secondary)
 
             Menu {
+                Button {
+                    monitor.selectedDestinationID = nil
+                } label: {
+                    Label("No MIDI Thru", systemImage: monitor.selectedDestinationID == nil ? "checkmark" : "circle")
+                }
+
+                Divider()
+
                 ForEach(monitor.destinations) { destination in
                     Button {
                         monitor.selectedDestinationID = destination.uniqueID
@@ -178,38 +470,43 @@ private struct ChannelRowView: View {
     let channelState: ChannelState
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            Text(String(format: "%02d", channelState.channelNumber))
-                .font(.system(size: 18, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .frame(width: 48)
-
-            ReadOnlyLEDValue(label: "Value", value: channelState.numericDisplay, width: 104)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 10) {
-                    Text(channelState.sourceName)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    if channelState.isActive {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 8, height: 8)
-                    }
-                }
-
-                Text(channelState.statusText)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                Text(String(format: "Ch %02d", channelState.channelNumber))
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
+                    .frame(width: 58, alignment: .leading)
+
+                ReadOnlyLEDValue(label: "Value", value: channelState.numericDisplay, width: 92)
+
+                Spacer(minLength: 0)
             }
+
+            HStack(spacing: 8) {
+                Text(channelState.sourceName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                if channelState.isActive {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 8, height: 8)
+                }
+            }
+
+            Text(channelState.statusText)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .minimumScaleFactor(0.9)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 14)
                 .fill(Color.white.opacity(0.07))

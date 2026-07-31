@@ -42,13 +42,96 @@ struct MIDIEndpointOption: Identifiable, Hashable {
     var id: MIDIUniqueID { uniqueID }
 }
 
+struct MIDIRouteDiagnostic: Identifiable {
+    struct RecentMessage: Identifiable {
+        let id = UUID()
+        let timestamp: String
+        let text: String
+        let isPerformance: Bool
+        let isRepeatWarning: Bool
+    }
+
+    struct Activity {
+        let totalEventCount: Int
+        let performanceEventCount: Int
+        let activeSensingCount: Int
+        let repeatWarningCount: Int
+        let lastAnyTimestamp: String
+        let lastAnyMessage: String
+        let lastPerformanceTimestamp: String?
+        let lastPerformanceMessage: String?
+        let lastRepeatWarningTimestamp: String?
+        let lastRepeatWarningMessage: String?
+        let isRecentlyActive: Bool
+        let isPerformanceRecentlyActive: Bool
+        let recentMessages: [RecentMessage]
+    }
+
+    let kind: String
+    let endpointUniqueID: MIDIUniqueID
+    let name: String
+    let entityUniqueID: MIDIUniqueID?
+    let deviceUniqueID: MIDIUniqueID?
+    let isSelected: Bool
+    let activity: Activity?
+
+    var id: String { "\(kind)-\(endpointUniqueID)" }
+}
+
+private struct MIDIEndpointActivity {
+    var totalEventCount: Int = 0
+    var performanceEventCount: Int = 0
+    var activeSensingCount: Int = 0
+    var repeatWarningCount: Int = 0
+    var lastAnyTimestamp: String = ""
+    var lastAnyMessage: String = ""
+    var lastAnySeenAt: Date = .distantPast
+    var lastPerformanceTimestamp: String?
+    var lastPerformanceMessage: String?
+    var lastPerformanceSeenAt: Date = .distantPast
+    var lastRepeatWarningTimestamp: String?
+    var lastRepeatWarningMessage: String?
+    var recentMessages: [MIDIRouteDiagnostic.RecentMessage] = []
+
+    var diagnosticActivity: MIDIRouteDiagnostic.Activity {
+        MIDIRouteDiagnostic.Activity(
+            totalEventCount: totalEventCount,
+            performanceEventCount: performanceEventCount,
+            activeSensingCount: activeSensingCount,
+            repeatWarningCount: repeatWarningCount,
+            lastAnyTimestamp: lastAnyTimestamp,
+            lastAnyMessage: lastAnyMessage,
+            lastPerformanceTimestamp: lastPerformanceTimestamp,
+            lastPerformanceMessage: lastPerformanceMessage,
+            lastRepeatWarningTimestamp: lastRepeatWarningTimestamp,
+            lastRepeatWarningMessage: lastRepeatWarningMessage,
+            isRecentlyActive: Date().timeIntervalSince(lastAnySeenAt) <= 2.0,
+            isPerformanceRecentlyActive: Date().timeIntervalSince(lastPerformanceSeenAt) <= 2.0,
+            recentMessages: recentMessages
+        )
+    }
+}
+
+private struct MIDINoteRepeatState {
+    let timestamp: Date
+    let velocity: Int
+}
+
+private struct MIDIEndpointDescriptor {
+    let endpoint: MIDIEndpointRef
+    let entityUniqueID: MIDIUniqueID?
+    let deviceUniqueID: MIDIUniqueID?
+}
+
 private final class MIDIInputSourceContext {
     let uniqueID: MIDIUniqueID
     let name: String
+    let descriptor: MIDIEndpointDescriptor
 
-    init(uniqueID: MIDIUniqueID, name: String) {
+    init(uniqueID: MIDIUniqueID, name: String, descriptor: MIDIEndpointDescriptor) {
         self.uniqueID = uniqueID
         self.name = name
+        self.descriptor = descriptor
     }
 }
 
@@ -59,11 +142,31 @@ private struct ConnectedSource {
 
 @MainActor
 final class MIDIMonitor: ObservableObject {
+    struct EventLogEntry: Identifiable {
+        let id = UUID()
+        let timestamp: String
+        let text: String
+    }
+
+    private static let eventTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
     @Published var channelStates: [ChannelState] = (0..<16).map(ChannelState.placeholder)
     @Published var destinations: [MIDIEndpointOption] = []
-    @Published var selectedDestinationID: MIDIUniqueID?
+    @Published var selectedDestinationID: MIDIUniqueID? {
+        didSet {
+            updateDestinationSelectionDiagnostics()
+        }
+    }
     @Published var footerStatus = "Starting CoreMIDI monitor..."
     @Published var lastSystemMessage = "System messages will appear here."
+    @Published var inputLogEntries: [EventLogEntry] = []
+    @Published var outputLogEntries: [EventLogEntry] = []
+    @Published var sourceDiagnostics: [MIDIRouteDiagnostic] = []
+    @Published var destinationDiagnostics: [MIDIRouteDiagnostic] = []
     @Published var lastReceivedChannel: Int?
     @Published var lastReceivedProgram: Int?
     @Published var lastReceivedNote: Int?
@@ -76,9 +179,15 @@ final class MIDIMonitor: ObservableObject {
     private var client = MIDIClientRef()
     private var inputPort = MIDIPortRef()
     private var outputPort = MIDIPortRef()
+    nonisolated(unsafe) private var realtimeOutputPort = MIDIPortRef()
+    nonisolated(unsafe) private var realtimeSelectedDestination = MIDIEndpointRef()
+    nonisolated(unsafe) private var realtimeSelectedDestinationName = "No MIDI Thru"
     private var connectedSources: [MIDIUniqueID: ConnectedSource] = [:]
     private var sourceNameByID: [MIDIUniqueID: String] = [:]
-    private var destinationByID: [MIDIUniqueID: MIDIEndpointRef] = [:]
+    private var destinationByID: [MIDIUniqueID: MIDIEndpointDescriptor] = [:]
+    private var sourceActivityByID: [MIDIUniqueID: MIDIEndpointActivity] = [:]
+    private var destinationActivityByID: [MIDIUniqueID: MIDIEndpointActivity] = [:]
+    private var recentNoteOnBySourceAndNote: [MIDIUniqueID: [Int: MIDINoteRepeatState]] = [:]
     private var parser = MIDIByteStreamParser()
 
     init() {
@@ -130,7 +239,7 @@ final class MIDIMonitor: ObservableObject {
     var selectedDestinationName: String {
         guard let selectedDestinationID,
               let destination = destinations.first(where: { $0.uniqueID == selectedDestinationID }) else {
-            return destinations.first?.name ?? "No MIDI destination"
+            return "No MIDI Thru"
         }
         return destination.name
     }
@@ -142,12 +251,46 @@ final class MIDIMonitor: ObservableObject {
         return sourceNameByID.values.sorted().joined(separator: ", ")
     }
 
+    var inputLogText: String {
+        if inputLogEntries.isEmpty {
+            return "Waiting for MIDI input..."
+        }
+        return inputLogEntries
+            .map { "[\($0.timestamp)] \($0.text)" }
+            .joined(separator: "\n")
+    }
+
+    var outputLogText: String {
+        if outputLogEntries.isEmpty {
+            return "Waiting for MIDI output..."
+        }
+        return outputLogEntries
+            .map { "[\($0.timestamp)] \($0.text)" }
+            .joined(separator: "\n")
+    }
+
+    var selectedDestinationDiagnosticText: String {
+        guard let selectedDestinationID,
+              let destination = destinationDiagnostics.first(where: { $0.endpointUniqueID == selectedDestinationID }) else {
+            return "No MIDI Thru selected."
+        }
+        return "\(destination.name)  endpoint \(destination.endpointUniqueID)  entity \(diagnosticValue(destination.entityUniqueID))  device \(diagnosticValue(destination.deviceUniqueID))"
+    }
+
+    private var suppressRepeatedNoteOnEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "suppressRepeatedNoteOn")
+    }
+
     func refreshEndpoints() {
         reconnectSources()
         refreshDestinations()
     }
 
     func sendAllNotesOff() {
+        guard selectedDestinationID != nil else {
+            footerStatus = "Choose a MIDI Thru destination before sending All Notes Off."
+            return
+        }
         for channel in 0..<16 {
             send(bytes: [0xB0 | UInt8(channel), 123, 0])
         }
@@ -166,24 +309,33 @@ final class MIDIMonitor: ObservableObject {
         MIDIInputPortCreateWithBlock(client, "MIDImunger Input" as CFString, &inputPort) { [weak self] packetList, sourceConnectionContext in
             guard let self else { return }
             let bytesByPacket = Self.packetBytes(from: packetList)
-            let sourceName = sourceConnectionContext.map {
-                Unmanaged<MIDIInputSourceContext>.fromOpaque($0).takeUnretainedValue().name
+            let sourceContext = sourceConnectionContext.map {
+                Unmanaged<MIDIInputSourceContext>.fromOpaque($0).takeUnretainedValue()
+            }
+            let sourceName = sourceContext?.name
+            let sourceUniqueID = sourceContext?.uniqueID
+            let forwardedResults = bytesByPacket.map { packetBytes in
+                self.forwardRealtime(bytes: packetBytes, from: sourceContext?.descriptor)
             }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                for packetBytes in bytesByPacket {
-                    self.handleIncomingBytes(packetBytes, sourceName: sourceName)
-                    self.forward(bytes: packetBytes)
+                for (packetBytes, forwardedResult) in zip(bytesByPacket, forwardedResults) {
+                    self.handleIncomingBytes(packetBytes, sourceID: sourceUniqueID, sourceName: sourceName)
+                    if let forwardedResult {
+                        self.appendOutputLog("\(forwardedResult.destinationName): \(forwardedResult.bytesDescription)")
+                    }
                 }
             }
         }
 
         MIDIOutputPortCreate(client, "MIDImunger Output" as CFString, &outputPort)
+        realtimeOutputPort = outputPort
     }
 
     private func reconnectSources() {
         disconnectAllSources()
         sourceNameByID.removeAll()
+        sourceDiagnostics.removeAll()
 
         let sourceCount = MIDIGetNumberOfSources()
         for index in 0..<sourceCount {
@@ -191,8 +343,20 @@ final class MIDIMonitor: ObservableObject {
             guard source != 0 else { continue }
             let uniqueID = propertyInt32(kMIDIPropertyUniqueID, of: source)
             let name = endpointDisplayName(source)
+            let descriptor = endpointDescriptor(for: source)
             sourceNameByID[uniqueID] = name
-            let context = MIDIInputSourceContext(uniqueID: uniqueID, name: name)
+            sourceDiagnostics.append(
+                MIDIRouteDiagnostic(
+                    kind: "source",
+                    endpointUniqueID: uniqueID,
+                    name: name,
+                    entityUniqueID: descriptor.entityUniqueID,
+                    deviceUniqueID: descriptor.deviceUniqueID,
+                    isSelected: false,
+                    activity: sourceActivityByID[uniqueID]?.diagnosticActivity
+                )
+            )
+            let context = MIDIInputSourceContext(uniqueID: uniqueID, name: name, descriptor: descriptor)
             let contextPointer = Unmanaged.passRetained(context).toOpaque()
             let status = MIDIPortConnectSource(inputPort, source, contextPointer)
             guard status == noErr else {
@@ -218,6 +382,7 @@ final class MIDIMonitor: ObservableObject {
     private func refreshDestinations() {
         destinationByID.removeAll()
         destinations.removeAll()
+        destinationDiagnostics.removeAll()
 
         let destinationCount = MIDIGetNumberOfDestinations()
         for index in 0..<destinationCount {
@@ -225,20 +390,43 @@ final class MIDIMonitor: ObservableObject {
             guard destination != 0 else { continue }
             let uniqueID = propertyInt32(kMIDIPropertyUniqueID, of: destination)
             let name = endpointDisplayName(destination)
-            destinationByID[uniqueID] = destination
+            let descriptor = endpointDescriptor(for: destination)
+            destinationByID[uniqueID] = descriptor
             destinations.append(MIDIEndpointOption(uniqueID: uniqueID, name: name))
+            destinationDiagnostics.append(
+                MIDIRouteDiagnostic(
+                    kind: "destination",
+                    endpointUniqueID: uniqueID,
+                    name: name,
+                    entityUniqueID: descriptor.entityUniqueID,
+                    deviceUniqueID: descriptor.deviceUniqueID,
+                    isSelected: selectedDestinationID == uniqueID,
+                    activity: destinationActivityByID[uniqueID]?.diagnosticActivity
+                )
+            )
         }
-
-        if let selectedDestinationID, destinationByID[selectedDestinationID] != nil {
-            return
+        if let selectedDestinationID, destinationByID[selectedDestinationID] == nil {
+            self.selectedDestinationID = nil
         }
-
-        selectedDestinationID = destinations.first?.uniqueID
+        updateDestinationSelectionDiagnostics()
+        updateRealtimeDestinationSnapshot()
     }
 
-    private func handleIncomingBytes(_ bytes: [UInt8], sourceName: String?) {
+    private func handleIncomingBytes(_ bytes: [UInt8], sourceID: MIDIUniqueID?, sourceName: String?) {
         for message in parser.consume(bytes: bytes, sourceName: sourceName) {
+            let repeatWarning = sourceID.flatMap { detectRepeatedNoteOn(for: $0, parsedMessage: message) }
+            if let sourceID {
+                recordSourceActivity(sourceID, message: message.statusText, parsedMessage: message, repeatWarning: repeatWarning)
+            }
+            if let repeatWarning {
+                if suppressRepeatedNoteOnEnabled {
+                    footerStatus = "Suppressed repeated Note On from \(sourceName ?? "Unknown Source")."
+                    appendInputLog("[Suppressed Repeat] " + repeatWarning)
+                    continue
+                }
+            }
             apply(message: message)
+            appendInputLog(message.statusText + "  [" + hex(bytes) + "]")
         }
     }
 
@@ -292,13 +480,55 @@ final class MIDIMonitor: ObservableObject {
         channelStates[channel] = state
     }
 
-    private func forward(bytes: [UInt8]) {
+    private func forward(bytes: [UInt8], from sourceDescriptor: MIDIEndpointDescriptor?) {
+        guard shouldForward(from: sourceDescriptor) else { return }
         send(bytes: bytes)
+    }
+
+    private func updateRealtimeDestinationSnapshot() {
+        if let selectedDestinationID,
+           let destination = destinationByID[selectedDestinationID]?.endpoint {
+            realtimeSelectedDestination = destination
+            realtimeSelectedDestinationName = selectedDestinationName
+        } else {
+            realtimeSelectedDestination = 0
+            realtimeSelectedDestinationName = "No MIDI Thru"
+        }
+    }
+
+    private struct ImmediateForwardResult {
+        let destinationName: String
+        let bytesDescription: String
+    }
+
+    nonisolated private func forwardRealtime(bytes: [UInt8], from sourceDescriptor: MIDIEndpointDescriptor?) -> ImmediateForwardResult? {
+        let destination = realtimeSelectedDestination
+        guard destination != 0 else { return nil }
+        if let sourceDescriptor, sourceDescriptor.endpoint == destination {
+            return nil
+        }
+
+        let bufferSize = 1024
+        var packetBuffer = [UInt8](repeating: 0, count: bufferSize)
+        packetBuffer.withUnsafeMutableBytes { rawBuffer in
+            guard let packetListPointer = rawBuffer.baseAddress?.assumingMemoryBound(to: MIDIPacketList.self) else {
+                return
+            }
+
+            let startPacket = MIDIPacketListInit(packetListPointer)
+            _ = MIDIPacketListAdd(packetListPointer, bufferSize, startPacket, 0, bytes.count, bytes)
+            MIDISend(realtimeOutputPort, destination, packetListPointer)
+        }
+
+        return ImmediateForwardResult(
+            destinationName: realtimeSelectedDestinationName,
+            bytesDescription: "[" + bytes.map { String(format: "%02X", $0) }.joined(separator: " ") + "]"
+        )
     }
 
     private func send(bytes: [UInt8]) {
         guard let selectedDestinationID,
-              let destination = destinationByID[selectedDestinationID] else {
+              let destination = destinationByID[selectedDestinationID]?.endpoint else {
             return
         }
 
@@ -313,6 +543,9 @@ final class MIDIMonitor: ObservableObject {
             _ = MIDIPacketListAdd(packetListPointer, bufferSize, startPacket, 0, bytes.count, bytes)
             MIDISend(outputPort, destination, packetListPointer)
         }
+
+        recordDestinationActivity(selectedDestinationID, message: "[\(hex(bytes))]")
+        appendOutputLog("\(selectedDestinationName): [" + hex(bytes) + "]")
     }
 
     private static func packetBytes(from packetList: UnsafePointer<MIDIPacketList>) -> [[UInt8]] {
@@ -350,11 +583,209 @@ final class MIDIMonitor: ObservableObject {
         return value
     }
 
+    private func shouldForward(from sourceDescriptor: MIDIEndpointDescriptor?) -> Bool {
+        guard let selectedDestinationID,
+              let destinationDescriptor = destinationByID[selectedDestinationID] else {
+            return false
+        }
+        guard let sourceDescriptor else {
+            return true
+        }
+
+        if sourceDescriptor.endpoint == destinationDescriptor.endpoint {
+            footerStatus = "Suppressed MIDI Thru loop back into the same endpoint: \(selectedDestinationName)."
+            return false
+        }
+
+        return true
+    }
+
+    private func endpointDescriptor(for endpoint: MIDIEndpointRef) -> MIDIEndpointDescriptor {
+        var entity = MIDIEntityRef()
+        let entityStatus = MIDIEndpointGetEntity(endpoint, &entity)
+        let entityUniqueID = entityStatus == noErr && entity != 0
+            ? propertyInt32(kMIDIPropertyUniqueID, of: entity)
+            : nil
+
+        var device = MIDIDeviceRef()
+        let deviceStatus = entityStatus == noErr && entity != 0 ? MIDIEntityGetDevice(entity, &device) : kMIDIUnknownEndpoint
+        let deviceUniqueID = deviceStatus == noErr && device != 0
+            ? propertyInt32(kMIDIPropertyUniqueID, of: device)
+            : nil
+
+        return MIDIEndpointDescriptor(
+            endpoint: endpoint,
+            entityUniqueID: entityUniqueID,
+            deviceUniqueID: deviceUniqueID
+        )
+    }
+
     private func ledText(for value: Int?, digits: Int = 3) -> String {
         guard let value else { return String(repeating: "-", count: digits) }
         let upperBound = Int(pow(10.0, Double(digits))) - 1
         let clamped = min(max(value, 0), upperBound)
         return String(format: "%0\(digits)d", clamped)
+    }
+
+    private func appendInputLog(_ text: String) {
+        appendLogEntry(text, to: &inputLogEntries)
+    }
+
+    private func appendOutputLog(_ text: String) {
+        appendLogEntry(text, to: &outputLogEntries)
+    }
+
+    private func appendLogEntry(_ text: String, to entries: inout [EventLogEntry]) {
+        let entry = EventLogEntry(
+            timestamp: Self.eventTimestampFormatter.string(from: Date()),
+            text: text
+        )
+        entries.append(entry)
+        let maxEntries = 1000
+        if entries.count > maxEntries {
+            entries.removeFirst(entries.count - maxEntries)
+        }
+    }
+
+    private func hex(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+
+    private func updateDestinationSelectionDiagnostics() {
+        destinationDiagnostics = destinationDiagnostics.map { diagnostic in
+            MIDIRouteDiagnostic(
+                kind: diagnostic.kind,
+                endpointUniqueID: diagnostic.endpointUniqueID,
+                name: diagnostic.name,
+                entityUniqueID: diagnostic.entityUniqueID,
+                deviceUniqueID: diagnostic.deviceUniqueID,
+                isSelected: diagnostic.endpointUniqueID == selectedDestinationID,
+                activity: destinationActivityByID[diagnostic.endpointUniqueID]?.diagnosticActivity
+            )
+        }
+    }
+
+    private func recordSourceActivity(_ uniqueID: MIDIUniqueID, message: String, parsedMessage: ParsedMIDIMessage, repeatWarning: String?) {
+        var activity = sourceActivityByID[uniqueID] ?? MIDIEndpointActivity()
+        let now = Date()
+        let timestamp = Self.eventTimestampFormatter.string(from: now)
+        let isPerformance = isPerformanceMessage(message)
+        activity.totalEventCount += 1
+        activity.lastAnyTimestamp = timestamp
+        activity.lastAnyMessage = message
+        activity.lastAnySeenAt = now
+        activity.recentMessages.append(
+            MIDIRouteDiagnostic.RecentMessage(
+                timestamp: timestamp,
+                text: message,
+                isPerformance: isPerformance,
+                isRepeatWarning: false
+            )
+        )
+        if activity.recentMessages.count > 5 {
+            activity.recentMessages.removeFirst(activity.recentMessages.count - 5)
+        }
+        if isPerformance {
+            activity.performanceEventCount += 1
+            activity.lastPerformanceTimestamp = timestamp
+            activity.lastPerformanceMessage = message
+            activity.lastPerformanceSeenAt = now
+        } else if isActiveSensingMessage(message) {
+            activity.activeSensingCount += 1
+        }
+
+        if let warning = repeatWarning {
+            activity.repeatWarningCount += 1
+            activity.lastRepeatWarningTimestamp = timestamp
+            activity.lastRepeatWarningMessage = warning
+            activity.recentMessages.append(
+                MIDIRouteDiagnostic.RecentMessage(
+                    timestamp: timestamp,
+                    text: warning,
+                    isPerformance: true,
+                    isRepeatWarning: true
+                )
+            )
+            if activity.recentMessages.count > 5 {
+                activity.recentMessages.removeFirst(activity.recentMessages.count - 5)
+            }
+            appendInputLog("[Repeat Detector] " + warning)
+        }
+
+        sourceActivityByID[uniqueID] = activity
+        refreshSourceActivityDiagnostics()
+    }
+
+    private func recordDestinationActivity(_ uniqueID: MIDIUniqueID, message: String) {
+        var activity = destinationActivityByID[uniqueID] ?? MIDIEndpointActivity()
+        let now = Date()
+        let timestamp = Self.eventTimestampFormatter.string(from: now)
+        activity.totalEventCount += 1
+        activity.performanceEventCount += 1
+        activity.lastAnyTimestamp = timestamp
+        activity.lastAnyMessage = message
+        activity.lastAnySeenAt = now
+        activity.lastPerformanceTimestamp = timestamp
+        activity.lastPerformanceMessage = message
+        activity.lastPerformanceSeenAt = now
+        activity.recentMessages.append(
+            MIDIRouteDiagnostic.RecentMessage(
+                timestamp: timestamp,
+                text: message,
+                isPerformance: true,
+                isRepeatWarning: false
+            )
+        )
+        if activity.recentMessages.count > 5 {
+            activity.recentMessages.removeFirst(activity.recentMessages.count - 5)
+        }
+        destinationActivityByID[uniqueID] = activity
+        updateDestinationSelectionDiagnostics()
+    }
+
+    private func refreshSourceActivityDiagnostics() {
+        sourceDiagnostics = sourceDiagnostics.map { diagnostic in
+            MIDIRouteDiagnostic(
+                kind: diagnostic.kind,
+                endpointUniqueID: diagnostic.endpointUniqueID,
+                name: diagnostic.name,
+                entityUniqueID: diagnostic.entityUniqueID,
+                deviceUniqueID: diagnostic.deviceUniqueID,
+                isSelected: diagnostic.isSelected,
+                activity: sourceActivityByID[diagnostic.endpointUniqueID]?.diagnosticActivity
+            )
+        }
+    }
+
+    private func diagnosticValue(_ value: MIDIUniqueID?) -> String {
+        value.map(String.init) ?? "-"
+    }
+
+    private func isActiveSensingMessage(_ message: String) -> Bool {
+        message.contains("Active Sensing")
+    }
+
+    private func isPerformanceMessage(_ message: String) -> Bool {
+        !isActiveSensingMessage(message)
+    }
+
+    private func detectRepeatedNoteOn(for uniqueID: MIDIUniqueID, parsedMessage: ParsedMIDIMessage) -> String? {
+        guard parsedMessage.isNoteOn,
+              let note = parsedMessage.lastPlayedNote,
+              let velocity = parsedMessage.lastPlayedVelocity else {
+            return nil
+        }
+
+        let now = Date()
+        let prior = recentNoteOnBySourceAndNote[uniqueID]?[note]
+        recentNoteOnBySourceAndNote[uniqueID, default: [:]][note] = MIDINoteRepeatState(timestamp: now, velocity: velocity)
+
+        guard let prior else { return nil }
+        let intervalMS = Int(now.timeIntervalSince(prior.timestamp) * 1000.0)
+        guard intervalMS >= 0, intervalMS <= 300 else { return nil }
+
+        let sourceName = sourceNameByID[uniqueID] ?? "Unknown Source"
+        return "\(sourceName): repeated Note On note \(note) within \(intervalMS) ms (velocities \(prior.velocity)->\(velocity))"
     }
 }
 
@@ -372,6 +803,7 @@ private struct ParsedMIDIMessage {
     var lastModulation: Int?
     var lastPlayedNote: Int?
     var lastPlayedVelocity: Int?
+    var isNoteOn: Bool
 }
 
 private struct MIDIByteStreamParser {
@@ -486,7 +918,8 @@ private struct MIDIByteStreamParser {
                 lastPitchBend: nil,
                 lastModulation: nil,
                 lastPlayedNote: nil,
-                lastPlayedVelocity: nil
+                lastPlayedVelocity: nil,
+                isNoteOn: false
             )
         case 0x90:
             let note = Int(bytes[safe: 1] ?? 0)
@@ -505,7 +938,8 @@ private struct MIDIByteStreamParser {
                 lastPitchBend: nil,
                 lastModulation: nil,
                 lastPlayedNote: velocity == 0 ? nil : note,
-                lastPlayedVelocity: velocity == 0 ? nil : velocity
+                lastPlayedVelocity: velocity == 0 ? nil : velocity,
+                isNoteOn: velocity != 0
             )
         case 0xA0:
             let note = Int(bytes[safe: 1] ?? 0)
@@ -523,7 +957,8 @@ private struct MIDIByteStreamParser {
                 lastPitchBend: nil,
                 lastModulation: nil,
                 lastPlayedNote: nil,
-                lastPlayedVelocity: nil
+                lastPlayedVelocity: nil,
+                isNoteOn: false
             )
         case 0xB0:
             let controller = Int(bytes[safe: 1] ?? 0)
@@ -542,7 +977,8 @@ private struct MIDIByteStreamParser {
                 lastPitchBend: nil,
                 lastModulation: controller == 1 ? value : nil,
                 lastPlayedNote: nil,
-                lastPlayedVelocity: nil
+                lastPlayedVelocity: nil,
+                isNoteOn: false
             )
         case 0xC0:
             let program = Int(bytes[safe: 1] ?? 0) + 1
@@ -559,7 +995,8 @@ private struct MIDIByteStreamParser {
                 lastPitchBend: nil,
                 lastModulation: nil,
                 lastPlayedNote: nil,
-                lastPlayedVelocity: nil
+                lastPlayedVelocity: nil,
+                isNoteOn: false
             )
         case 0xD0:
             let pressure = Int(bytes[safe: 1] ?? 0)
@@ -576,7 +1013,8 @@ private struct MIDIByteStreamParser {
                 lastPitchBend: nil,
                 lastModulation: nil,
                 lastPlayedNote: nil,
-                lastPlayedVelocity: nil
+                lastPlayedVelocity: nil,
+                isNoteOn: false
             )
         case 0xE0:
             let lsb = Int(bytes[safe: 1] ?? 0)
@@ -595,7 +1033,8 @@ private struct MIDIByteStreamParser {
                 lastPitchBend: bend,
                 lastModulation: nil,
                 lastPlayedNote: nil,
-                lastPlayedVelocity: nil
+                lastPlayedVelocity: nil,
+                isNoteOn: false
             )
         default:
             return ParsedMIDIMessage(
@@ -611,7 +1050,8 @@ private struct MIDIByteStreamParser {
                 lastPitchBend: nil,
                 lastModulation: nil,
                 lastPlayedNote: nil,
-                lastPlayedVelocity: nil
+                lastPlayedVelocity: nil,
+                isNoteOn: false
             )
         }
     }
@@ -630,7 +1070,8 @@ private struct MIDIByteStreamParser {
             lastPitchBend: nil,
             lastModulation: nil,
             lastPlayedNote: nil,
-            lastPlayedVelocity: nil
+            lastPlayedVelocity: nil,
+            isNoteOn: false
         )
     }
 
