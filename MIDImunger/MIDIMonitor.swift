@@ -1,3 +1,4 @@
+import AppKit
 import CoreMIDI
 import Foundation
 
@@ -38,6 +39,14 @@ struct ChannelState: Identifiable {
 struct MIDIEndpointOption: Identifiable, Hashable {
     let uniqueID: MIDIUniqueID
     let name: String
+
+    var id: MIDIUniqueID { uniqueID }
+}
+
+struct MIDIInputSourceOption: Identifiable, Hashable {
+    let uniqueID: MIDIUniqueID
+    let name: String
+    var isEnabled: Bool
 
     var id: MIDIUniqueID { uniqueID }
 }
@@ -142,10 +151,28 @@ private struct ConnectedSource {
 
 @MainActor
 final class MIDIMonitor: ObservableObject {
+    private enum DefaultsKey {
+        static let suppressRepeatedNoteOn = "suppressRepeatedNoteOn"
+        static let selectedDestinationID = "selectedDestinationID"
+        static let selectedDestinationName = "selectedDestinationName"
+    }
+
     struct EventLogEntry: Identifiable {
         let id = UUID()
         let timestamp: String
         let text: String
+    }
+
+    enum SaveLogsResult {
+        case saved(inputURL: URL, outputURL: URL)
+        case cancelled
+        case failed
+    }
+
+    enum QuitLogDecision {
+        case saveAndQuit
+        case quitWithoutSaving
+        case cancel
     }
 
     private static let eventTimestampFormatter: DateFormatter = {
@@ -154,11 +181,20 @@ final class MIDIMonitor: ObservableObject {
         return formatter
     }()
 
+    private static let logFileTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyMMdd-HHmmss"
+        return formatter
+    }()
+
     @Published var channelStates: [ChannelState] = (0..<16).map(ChannelState.placeholder)
+    @Published var inputSources: [MIDIInputSourceOption] = []
     @Published var destinations: [MIDIEndpointOption] = []
     @Published var selectedDestinationID: MIDIUniqueID? {
         didSet {
+            persistSelectedDestination()
             updateDestinationSelectionDiagnostics()
+            updateRealtimeDestinationSnapshot()
         }
     }
     @Published var footerStatus = "Starting CoreMIDI monitor..."
@@ -189,9 +225,12 @@ final class MIDIMonitor: ObservableObject {
     private var destinationActivityByID: [MIDIUniqueID: MIDIEndpointActivity] = [:]
     private var recentNoteOnBySourceAndNote: [MIDIUniqueID: [Int: MIDINoteRepeatState]] = [:]
     private var parser = MIDIByteStreamParser()
+    private var hasShownAnyLogThisSession = false
+    private var inputSourceEnabledByID: [MIDIUniqueID: Bool] = [:]
 
     init() {
         setupMIDI()
+        restoreSelectedDestinationPreference()
         refreshEndpoints()
     }
 
@@ -245,10 +284,10 @@ final class MIDIMonitor: ObservableObject {
     }
 
     var sourceSummaryText: String {
-        if sourceNameByID.isEmpty {
+        if inputSources.isEmpty {
             return "No CoreMIDI sources found."
         }
-        return sourceNameByID.values.sorted().joined(separator: ", ")
+        return inputSources.map(\.name).sorted().joined(separator: ", ")
     }
 
     var inputLogText: String {
@@ -278,12 +317,81 @@ final class MIDIMonitor: ObservableObject {
     }
 
     private var suppressRepeatedNoteOnEnabled: Bool {
-        UserDefaults.standard.bool(forKey: "suppressRepeatedNoteOn")
+        UserDefaults.standard.bool(forKey: DefaultsKey.suppressRepeatedNoteOn)
+    }
+
+    var shouldPromptToSaveLogsOnQuit: Bool {
+        hasShownAnyLogThisSession
     }
 
     func refreshEndpoints() {
         reconnectSources()
         refreshDestinations()
+    }
+
+    func setInputSourceEnabled(_ uniqueID: MIDIUniqueID, isEnabled: Bool) {
+        inputSourceEnabledByID[uniqueID] = isEnabled
+        if let index = inputSources.firstIndex(where: { $0.uniqueID == uniqueID }) {
+            inputSources[index].isEnabled = isEnabled
+        }
+        reconnectSources()
+    }
+
+    func updateLogVisibility(inputVisible: Bool, outputVisible: Bool) {
+        if inputVisible || outputVisible {
+            hasShownAnyLogThisSession = true
+        }
+    }
+
+    func saveLogsInteractively() -> SaveLogsResult {
+        let panel = NSOpenPanel()
+        panel.title = "Save Logs"
+        panel.message = "Choose a folder where MIDImunger should save separate input and output log files."
+        panel.prompt = "Save Logs"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let directoryURL = panel.url else {
+            return .cancelled
+        }
+
+        do {
+            let savedURLs = try saveLogs(to: directoryURL)
+            footerStatus = "Saved logs to \(directoryURL.path)."
+            return .saved(inputURL: savedURLs.inputURL, outputURL: savedURLs.outputURL)
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "Couldn’t Save MIDImunger Logs"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+            return .failed
+        }
+    }
+
+    func promptToSaveLogsBeforeQuit() -> QuitLogDecision {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Save MIDImunger logs before quitting?"
+        alert.informativeText = "MIDImunger can save the current input and output logs as separate plain-text files."
+        alert.addButton(withTitle: "Save Logs")
+        alert.addButton(withTitle: "Quit Without Saving")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            switch saveLogsInteractively() {
+            case .saved:
+                return .saveAndQuit
+            case .cancelled, .failed:
+                return .cancel
+            }
+        case .alertSecondButtonReturn:
+            return .quitWithoutSaving
+        default:
+            return .cancel
+        }
     }
 
     func sendAllNotesOff() {
@@ -336,15 +444,20 @@ final class MIDIMonitor: ObservableObject {
         disconnectAllSources()
         sourceNameByID.removeAll()
         sourceDiagnostics.removeAll()
+        inputSources.removeAll()
 
         let sourceCount = MIDIGetNumberOfSources()
+        var enabledSourceCount = 0
         for index in 0..<sourceCount {
             let source = MIDIGetSource(index)
             guard source != 0 else { continue }
             let uniqueID = propertyInt32(kMIDIPropertyUniqueID, of: source)
             let name = endpointDisplayName(source)
             let descriptor = endpointDescriptor(for: source)
+            let isEnabled = inputSourceEnabledByID[uniqueID] ?? true
+            inputSourceEnabledByID[uniqueID] = isEnabled
             sourceNameByID[uniqueID] = name
+            inputSources.append(MIDIInputSourceOption(uniqueID: uniqueID, name: name, isEnabled: isEnabled))
             sourceDiagnostics.append(
                 MIDIRouteDiagnostic(
                     kind: "source",
@@ -356,6 +469,7 @@ final class MIDIMonitor: ObservableObject {
                     activity: sourceActivityByID[uniqueID]?.diagnosticActivity
                 )
             )
+            guard isEnabled else { continue }
             let context = MIDIInputSourceContext(uniqueID: uniqueID, name: name, descriptor: descriptor)
             let contextPointer = Unmanaged.passRetained(context).toOpaque()
             let status = MIDIPortConnectSource(inputPort, source, contextPointer)
@@ -364,11 +478,12 @@ final class MIDIMonitor: ObservableObject {
                 continue
             }
             connectedSources[uniqueID] = ConnectedSource(endpoint: source, contextPointer: contextPointer)
+            enabledSourceCount += 1
         }
 
         footerStatus = sourceCount == 0
             ? "No MIDI input sources are available."
-            : "Listening to \(sourceCount) MIDI source\(sourceCount == 1 ? "" : "s")."
+            : "Listening to \(enabledSourceCount) of \(sourceCount) MIDI source\(sourceCount == 1 ? "" : "s")."
     }
 
     private func disconnectAllSources() {
@@ -405,9 +520,7 @@ final class MIDIMonitor: ObservableObject {
                 )
             )
         }
-        if let selectedDestinationID, destinationByID[selectedDestinationID] == nil {
-            self.selectedDestinationID = nil
-        }
+        restoreSelectedDestinationIfPossible()
         updateDestinationSelectionDiagnostics()
         updateRealtimeDestinationSnapshot()
     }
@@ -651,6 +764,21 @@ final class MIDIMonitor: ObservableObject {
         bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
     }
 
+    private func saveLogs(to directoryURL: URL) throws -> (inputURL: URL, outputURL: URL) {
+        let timestamp = Self.logFileTimestampFormatter.string(from: Date())
+        let inputURL = directoryURL.appendingPathComponent("MIDImunger In \(timestamp).txt")
+        let outputURL = directoryURL.appendingPathComponent("MIDImunger Out \(timestamp).txt")
+
+        try savedLogText(for: inputLogEntries).write(to: inputURL, atomically: true, encoding: .utf8)
+        try savedLogText(for: outputLogEntries).write(to: outputURL, atomically: true, encoding: .utf8)
+
+        return (inputURL, outputURL)
+    }
+
+    private func savedLogText(for entries: [EventLogEntry]) -> String {
+        entries.map { "[\($0.timestamp)] \($0.text)" }.joined(separator: "\n")
+    }
+
     private func updateDestinationSelectionDiagnostics() {
         destinationDiagnostics = destinationDiagnostics.map { diagnostic in
             MIDIRouteDiagnostic(
@@ -663,6 +791,58 @@ final class MIDIMonitor: ObservableObject {
                 activity: destinationActivityByID[diagnostic.endpointUniqueID]?.diagnosticActivity
             )
         }
+    }
+
+    private func persistSelectedDestination() {
+        let defaults = UserDefaults.standard
+
+        guard let selectedDestinationID,
+              let destination = destinations.first(where: { $0.uniqueID == selectedDestinationID }) else {
+            defaults.removeObject(forKey: DefaultsKey.selectedDestinationID)
+            defaults.removeObject(forKey: DefaultsKey.selectedDestinationName)
+            return
+        }
+
+        defaults.set(Int(selectedDestinationID), forKey: DefaultsKey.selectedDestinationID)
+        defaults.set(destination.name, forKey: DefaultsKey.selectedDestinationName)
+    }
+
+    private func restoreSelectedDestinationPreference() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: DefaultsKey.selectedDestinationID) != nil else {
+            selectedDestinationID = nil
+            return
+        }
+
+        selectedDestinationID = MIDIUniqueID(defaults.integer(forKey: DefaultsKey.selectedDestinationID))
+    }
+
+    private func restoreSelectedDestinationIfPossible() {
+        guard !destinations.isEmpty else {
+            selectedDestinationID = nil
+            return
+        }
+
+        if let selectedDestinationID, destinationByID[selectedDestinationID] != nil {
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: DefaultsKey.selectedDestinationID) != nil {
+            let savedID = MIDIUniqueID(defaults.integer(forKey: DefaultsKey.selectedDestinationID))
+            if destinationByID[savedID] != nil {
+                selectedDestinationID = savedID
+                return
+            }
+        }
+
+        if let savedName = defaults.string(forKey: DefaultsKey.selectedDestinationName),
+           let matchingDestination = destinations.first(where: { $0.name == savedName }) {
+            selectedDestinationID = matchingDestination.uniqueID
+            return
+        }
+
+        selectedDestinationID = nil
     }
 
     private func recordSourceActivity(_ uniqueID: MIDIUniqueID, message: String, parsedMessage: ParsedMIDIMessage, repeatWarning: String?) {

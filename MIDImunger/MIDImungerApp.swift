@@ -4,11 +4,15 @@ import SwiftUI
 @main
 struct MIDImungerApp: App {
     @StateObject private var monitor = MIDIMonitor()
+    @NSApplicationDelegateAdaptor(MIDImungerAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
             ContentView(monitor: monitor)
                 .frame(minWidth: 1240, minHeight: 860)
+                .onAppear {
+                    appDelegate.monitor = monitor
+                }
         }
 
         Settings {
@@ -19,6 +23,12 @@ struct MIDImungerApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About MIDImunger") {
                     AboutBoxController.shared.show()
+                }
+            }
+
+            CommandGroup(replacing: .saveItem) {
+                Button("Save Logs...") {
+                    _ = monitor.saveLogsInteractively()
                 }
             }
 
@@ -33,6 +43,26 @@ struct MIDImungerApp: App {
                 }
                 .keyboardShortcut(".")
             }
+        }
+    }
+}
+
+@MainActor
+final class MIDImungerAppDelegate: NSObject, NSApplicationDelegate {
+    weak var monitor: MIDIMonitor?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let monitor, monitor.shouldPromptToSaveLogsOnQuit else {
+            return .terminateNow
+        }
+
+        switch monitor.promptToSaveLogsBeforeQuit() {
+        case .saveAndQuit:
+            return .terminateNow
+        case .quitWithoutSaving:
+            return .terminateNow
+        case .cancel:
+            return .terminateCancel
         }
     }
 }
@@ -55,15 +85,12 @@ private struct PreferencesView: View {
                 Section("Logging") {
                     Toggle("Show Input Log", isOn: $showInputLog)
                     Toggle("Show Output Log", isOn: $showOutputLog)
+                    Text("MIDImunger keeps only the most recent 1000 lines in each log when they are not shown.")
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Input Filtering") {
                     Toggle("Suppress repeated Note On within 300 ms", isOn: $suppressRepeatedNoteOn)
-                }
-
-                Section("Notes") {
-                    Text("MIDImunger keeps only the most recent 1000 lines in each log.")
-                        .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)

@@ -54,7 +54,7 @@ private struct AboutBoxView: View {
             VisualEffectBackground()
 
             VStack(alignment: .leading, spacing: 0) {
-                PlaceholderAboutIcon()
+                AboutApplicationIcon()
                     .padding(.bottom, 22)
 
                 Text("MIDImunger")
@@ -100,30 +100,13 @@ private struct AboutBoxView: View {
     }
 }
 
-private struct PlaceholderAboutIcon: View {
+private struct AboutApplicationIcon: View {
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.24, green: 0.28, blue: 0.31),
-                            Color(red: 0.12, green: 0.15, blue: 0.18),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: 58, height: 58)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                )
-
-            Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.92))
-        }
+        Image(nsImage: NSApp.applicationIconImage)
+            .resizable()
+            .interpolation(.high)
+            .frame(width: 58, height: 58)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

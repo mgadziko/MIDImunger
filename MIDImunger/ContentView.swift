@@ -51,6 +51,15 @@ struct ContentView: View {
                 endPoint: .bottomTrailing
             )
         )
+        .onAppear {
+            monitor.updateLogVisibility(inputVisible: showInputLog, outputVisible: showOutputLog)
+        }
+        .onChange(of: showInputLog) { _, newValue in
+            monitor.updateLogVisibility(inputVisible: newValue, outputVisible: showOutputLog)
+        }
+        .onChange(of: showOutputLog) { _, newValue in
+            monitor.updateLogVisibility(inputVisible: showInputLog, outputVisible: newValue)
+        }
     }
 
     private var channelGrid: some View {
@@ -71,10 +80,7 @@ struct ContentView: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
-            HeaderPanel(
-                title: "Inputs",
-                bodyText: monitor.sourceSummaryText
-            )
+            InputsPanel(monitor: monitor)
 
             DestinationPanel(monitor: monitor)
 
@@ -386,6 +392,46 @@ struct ContentView: View {
     }
 }
 
+private struct InputsPanel: View {
+    @ObservedObject var monitor: MIDIMonitor
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Inputs")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            if monitor.inputSources.isEmpty {
+                Text("No CoreMIDI sources found.")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+            } else {
+                ForEach(monitor.inputSources) { source in
+                    Toggle(
+                        source.name,
+                        isOn: Binding(
+                            get: { source.isEnabled },
+                            set: { monitor.setInputSourceEnabled(source.uniqueID, isEnabled: $0) }
+                        )
+                    )
+                    .toggleStyle(.checkbox)
+                    .font(.subheadline.weight(.medium))
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: 320, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+        )
+    }
+}
+
 private struct HeaderPanel: View {
     var title: String
     var bodyText: String
@@ -470,43 +516,39 @@ private struct ChannelRowView: View {
     let channelState: ChannelState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 10) {
-                Text(String(format: "Ch %02d", channelState.channelNumber))
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .frame(width: 58, alignment: .leading)
-
-                ReadOnlyLEDValue(label: "Value", value: channelState.numericDisplay, width: 92)
-
-                Spacer(minLength: 0)
-            }
-
-            HStack(spacing: 8) {
-                Text(channelState.sourceName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                if channelState.isActive {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 8, height: 8)
-                }
-            }
-
-            Text(channelState.statusText)
-                .font(.system(size: 12, weight: .medium, design: .rounded))
+        HStack(alignment: .center, spacing: 12) {
+            Text(String(format: "Ch %02d", channelState.channelNumber))
+                .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .lineLimit(2)
-                .truncationMode(.tail)
-                .fixedSize(horizontal: false, vertical: true)
-                .minimumScaleFactor(0.9)
+                .frame(width: 58, alignment: .leading)
+
+            ReadOnlyLEDValue(label: "Value", value: channelState.numericDisplay, width: 92)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(channelState.sourceName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    if channelState.isActive {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                    }
+                }
+
+                Text(channelState.statusText)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 14)
                 .fill(Color.white.opacity(0.07))
