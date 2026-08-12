@@ -80,9 +80,7 @@ struct ContentView: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
-            InputsPanel(monitor: monitor)
-
-            DestinationPanel(monitor: monitor)
+            RoutingPanel(monitor: monitor)
 
             HeaderPanel(
                 title: "Activity Scope",
@@ -107,11 +105,19 @@ struct ContentView: View {
 
             Spacer(minLength: 8)
 
-            Button("All Notes Off") {
-                monitor.sendAllNotesOff()
+            VStack(spacing: 8) {
+                Button("All Notes Off") {
+                    monitor.sendAllNotesOff()
+                }
+                .controlSize(.large)
+                .frame(width: 168)
+
+                Button("DX Play") {
+                    monitor.sendDXPlay()
+                }
+                .controlSize(.large)
+                .frame(width: 168)
             }
-            .controlSize(.large)
-            .frame(width: 168)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -392,6 +398,43 @@ struct ContentView: View {
     }
 }
 
+private struct RoutingPanel: View {
+    @ObservedObject var monitor: MIDIMonitor
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Routing")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button {
+                    monitor.refreshEndpoints()
+                } label: {
+                    Label("Refresh MIDI", systemImage: "arrow.clockwise")
+                }
+                .controlSize(.small)
+            }
+
+            HStack(alignment: .top, spacing: 14) {
+                InputsPanel(monitor: monitor)
+                OutputsPanel(monitor: monitor)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+        )
+    }
+}
+
 private struct InputsPanel: View {
     @ObservedObject var monitor: MIDIMonitor
 
@@ -419,16 +462,7 @@ private struct InputsPanel: View {
                 }
             }
         }
-        .padding(12)
         .frame(maxWidth: 320, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
     }
 }
 
@@ -463,52 +497,40 @@ private struct HeaderPanel: View {
     var body: some View { bodyView }
 }
 
-private struct DestinationPanel: View {
+private struct OutputsPanel: View {
     @ObservedObject var monitor: MIDIMonitor
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("MIDI Thru Destination")
+            Text("Outputs")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            Menu {
-                Button {
-                    monitor.selectedDestinationID = nil
-                } label: {
-                    Label("No MIDI Thru", systemImage: monitor.selectedDestinationID == nil ? "checkmark" : "circle")
-                }
-
-                Divider()
-
+            if monitor.destinations.isEmpty {
+                Text("No CoreMIDI destinations found.")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+            } else {
                 ForEach(monitor.destinations) { destination in
-                    Button {
-                        monitor.selectedDestinationID = destination.uniqueID
-                    } label: {
-                        Label(destination.name, systemImage: monitor.selectedDestinationID == destination.uniqueID ? "checkmark" : "circle")
-                    }
+                    Toggle(
+                        destination.name,
+                        isOn: Binding(
+                            get: { monitor.selectedDestinationIDs.contains(destination.uniqueID) },
+                            set: { monitor.setDestinationEnabled(destination.uniqueID, isEnabled: $0) }
+                        )
+                    )
+                    .toggleStyle(.checkbox)
+                    .font(.subheadline.weight(.medium))
                 }
-            } label: {
-                Label(monitor.selectedDestinationName, systemImage: "arrow.triangle.branch")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
 
-            Button {
-                monitor.refreshEndpoints()
-            } label: {
-                Label("Refresh MIDI", systemImage: "arrow.clockwise")
+                if monitor.selectedDestinationIDs.isEmpty {
+                    Text("No MIDI Thru")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
-        .padding(12)
         .frame(maxWidth: 320, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
     }
 }
 

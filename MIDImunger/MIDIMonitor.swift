@@ -132,6 +132,30 @@ private struct MIDIEndpointDescriptor {
     let deviceUniqueID: MIDIUniqueID?
 }
 
+private struct SelectedDestination {
+    let uniqueID: MIDIUniqueID
+    let endpoint: MIDIEndpointRef
+    let name: String
+}
+
+private final class LockedDestinations {
+    private let lock = NSLock()
+    private var destinations: [SelectedDestination] = []
+
+    func set(_ destinations: [SelectedDestination]) {
+        lock.lock()
+        self.destinations = destinations
+        lock.unlock()
+    }
+
+    func snapshot() -> [SelectedDestination] {
+        lock.lock()
+        let snapshot = destinations
+        lock.unlock()
+        return snapshot
+    }
+}
+
 private final class MIDIInputSourceContext {
     let uniqueID: MIDIUniqueID
     let name: String
@@ -153,6 +177,8 @@ private struct ConnectedSource {
 final class MIDIMonitor: ObservableObject {
     private enum DefaultsKey {
         static let suppressRepeatedNoteOn = "suppressRepeatedNoteOn"
+        static let selectedDestinationIDs = "selectedDestinationIDs"
+        static let selectedDestinationNames = "selectedDestinationNames"
         static let selectedDestinationID = "selectedDestinationID"
         static let selectedDestinationName = "selectedDestinationName"
     }
@@ -190,11 +216,11 @@ final class MIDIMonitor: ObservableObject {
     @Published var channelStates: [ChannelState] = (0..<16).map(ChannelState.placeholder)
     @Published var inputSources: [MIDIInputSourceOption] = []
     @Published var destinations: [MIDIEndpointOption] = []
-    @Published var selectedDestinationID: MIDIUniqueID? {
+    @Published var selectedDestinationIDs: [MIDIUniqueID] = [] {
         didSet {
-            persistSelectedDestination()
+            persistSelectedDestinations()
             updateDestinationSelectionDiagnostics()
-            updateRealtimeDestinationSnapshot()
+            updateRealtimeDestinationsSnapshot()
         }
     }
     @Published var footerStatus = "Starting CoreMIDI monitor..."
@@ -216,8 +242,7 @@ final class MIDIMonitor: ObservableObject {
     private var inputPort = MIDIPortRef()
     private var outputPort = MIDIPortRef()
     nonisolated(unsafe) private var realtimeOutputPort = MIDIPortRef()
-    nonisolated(unsafe) private var realtimeSelectedDestination = MIDIEndpointRef()
-    nonisolated(unsafe) private var realtimeSelectedDestinationName = "No MIDI Thru"
+    nonisolated(unsafe) private let realtimeSelectedDestinations = LockedDestinations()
     private var connectedSources: [MIDIUniqueID: ConnectedSource] = [:]
     private var sourceNameByID: [MIDIUniqueID: String] = [:]
     private var destinationByID: [MIDIUniqueID: MIDIEndpointDescriptor] = [:]
@@ -276,11 +301,13 @@ final class MIDIMonitor: ObservableObject {
     }
 
     var selectedDestinationName: String {
-        guard let selectedDestinationID,
-              let destination = destinations.first(where: { $0.uniqueID == selectedDestinationID }) else {
+        let selectedNames = selectedDestinationIDs.compactMap { uniqueID in
+            destinations.first(where: { $0.uniqueID == uniqueID })?.name
+        }
+        guard !selectedNames.isEmpty else {
             return "No MIDI Thru"
         }
-        return destination.name
+        return selectedNames.joined(separator: ", ")
     }
 
     var sourceSummaryText: String {
@@ -309,11 +336,15 @@ final class MIDIMonitor: ObservableObject {
     }
 
     var selectedDestinationDiagnosticText: String {
-        guard let selectedDestinationID,
-              let destination = destinationDiagnostics.first(where: { $0.endpointUniqueID == selectedDestinationID }) else {
+        let selectedDestinations = destinationDiagnostics.filter { selectedDestinationIDs.contains($0.endpointUniqueID) }
+        guard !selectedDestinations.isEmpty else {
             return "No MIDI Thru selected."
         }
-        return "\(destination.name)  endpoint \(destination.endpointUniqueID)  entity \(diagnosticValue(destination.entityUniqueID))  device \(diagnosticValue(destination.deviceUniqueID))"
+        return selectedDestinations
+            .map {
+                "\($0.name)  endpoint \($0.endpointUniqueID)  entity \(diagnosticValue($0.entityUniqueID))  device \(diagnosticValue($0.deviceUniqueID))"
+            }
+            .joined(separator: "   |   ")
     }
 
     private var suppressRepeatedNoteOnEnabled: Bool {
@@ -335,6 +366,17 @@ final class MIDIMonitor: ObservableObject {
             inputSources[index].isEnabled = isEnabled
         }
         reconnectSources()
+    }
+
+    func setDestinationEnabled(_ uniqueID: MIDIUniqueID, isEnabled: Bool) {
+        var updatedDestinations = selectedDestinationIDs
+        if isEnabled {
+            guard !updatedDestinations.contains(uniqueID) else { return }
+            updatedDestinations.append(uniqueID)
+        } else {
+            updatedDestinations.removeAll { $0 == uniqueID }
+        }
+        selectedDestinationIDs = updatedDestinations
     }
 
     func updateLogVisibility(inputVisible: Bool, outputVisible: Bool) {
@@ -395,7 +437,7 @@ final class MIDIMonitor: ObservableObject {
     }
 
     func sendAllNotesOff() {
-        guard selectedDestinationID != nil else {
+        guard !selectedDestinationIDs.isEmpty else {
             footerStatus = "Choose a MIDI Thru destination before sending All Notes Off."
             return
         }
@@ -403,6 +445,29 @@ final class MIDIMonitor: ObservableObject {
             send(bytes: [0xB0 | UInt8(channel), 123, 0])
         }
         footerStatus = "Sent All Notes Off on channels 1-16 to \(selectedDestinationName)."
+    }
+
+    func sendDXPlay() {
+        guard !selectedDestinationIDs.isEmpty else {
+            footerStatus = "Choose a MIDI Thru destination before sending DX Play."
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let press: [UInt8] = [0xF0, 0x43, 0x10, 0x08, 27, 127, 0xF7]
+            let release: [UInt8] = [0xF0, 0x43, 0x10, 0x08, 27, 0, 0xF7]
+
+            self.send(bytes: press)
+            do {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            } catch {
+                self.footerStatus = "DX Play interrupted before release."
+                return
+            }
+            self.send(bytes: release)
+            self.footerStatus = "Sent DX Play recovery command to \(self.selectedDestinationName)."
+        }
     }
 
     private func setupMIDI() {
@@ -429,8 +494,10 @@ final class MIDIMonitor: ObservableObject {
                 guard let self else { return }
                 for (packetBytes, forwardedResult) in zip(bytesByPacket, forwardedResults) {
                     self.handleIncomingBytes(packetBytes, sourceID: sourceUniqueID, sourceName: sourceName)
-                    if let forwardedResult {
-                        self.appendOutputLog("\(forwardedResult.destinationName): \(forwardedResult.bytesDescription)")
+                    if !forwardedResult.isEmpty {
+                        for result in forwardedResult {
+                            self.appendOutputLog("\(result.destinationName): \(result.bytesDescription)")
+                        }
                     }
                 }
             }
@@ -515,14 +582,14 @@ final class MIDIMonitor: ObservableObject {
                     name: name,
                     entityUniqueID: descriptor.entityUniqueID,
                     deviceUniqueID: descriptor.deviceUniqueID,
-                    isSelected: selectedDestinationID == uniqueID,
+                    isSelected: selectedDestinationIDs.contains(uniqueID),
                     activity: destinationActivityByID[uniqueID]?.diagnosticActivity
                 )
             )
         }
-        restoreSelectedDestinationIfPossible()
+        restoreSelectedDestinationsIfPossible()
         updateDestinationSelectionDiagnostics()
-        updateRealtimeDestinationSnapshot()
+        updateRealtimeDestinationsSnapshot()
     }
 
     private func handleIncomingBytes(_ bytes: [UInt8], sourceID: MIDIUniqueID?, sourceName: String?) {
@@ -594,19 +661,18 @@ final class MIDIMonitor: ObservableObject {
     }
 
     private func forward(bytes: [UInt8], from sourceDescriptor: MIDIEndpointDescriptor?) {
-        guard shouldForward(from: sourceDescriptor) else { return }
-        send(bytes: bytes)
+        send(bytes: bytes, excluding: sourceDescriptor?.endpoint)
     }
 
-    private func updateRealtimeDestinationSnapshot() {
-        if let selectedDestinationID,
-           let destination = destinationByID[selectedDestinationID]?.endpoint {
-            realtimeSelectedDestination = destination
-            realtimeSelectedDestinationName = selectedDestinationName
-        } else {
-            realtimeSelectedDestination = 0
-            realtimeSelectedDestinationName = "No MIDI Thru"
+    private func updateRealtimeDestinationsSnapshot() {
+        let snapshot: [SelectedDestination] = selectedDestinationIDs.compactMap { uniqueID in
+            guard let destination = destinationByID[uniqueID]?.endpoint,
+                  let destinationName = destinations.first(where: { $0.uniqueID == uniqueID })?.name else {
+                return nil
+            }
+            return SelectedDestination(uniqueID: uniqueID, endpoint: destination, name: destinationName)
         }
+        realtimeSelectedDestinations.set(snapshot)
     }
 
     private struct ImmediateForwardResult {
@@ -614,51 +680,68 @@ final class MIDIMonitor: ObservableObject {
         let bytesDescription: String
     }
 
-    nonisolated private func forwardRealtime(bytes: [UInt8], from sourceDescriptor: MIDIEndpointDescriptor?) -> ImmediateForwardResult? {
-        let destination = realtimeSelectedDestination
-        guard destination != 0 else { return nil }
-        if let sourceDescriptor, sourceDescriptor.endpoint == destination {
-            return nil
+    nonisolated private func forwardRealtime(bytes: [UInt8], from sourceDescriptor: MIDIEndpointDescriptor?) -> [ImmediateForwardResult] {
+        let selectedDestinations = realtimeSelectedDestinations.snapshot().filter { destination in
+            guard let sourceDescriptor else { return true }
+            return sourceDescriptor.endpoint != destination.endpoint
         }
 
-        let bufferSize = 1024
-        var packetBuffer = [UInt8](repeating: 0, count: bufferSize)
-        packetBuffer.withUnsafeMutableBytes { rawBuffer in
-            guard let packetListPointer = rawBuffer.baseAddress?.assumingMemoryBound(to: MIDIPacketList.self) else {
-                return
+        guard !selectedDestinations.isEmpty else { return [] }
+
+        return selectedDestinations.map { destination in
+            let bufferSize = 1024
+            var packetBuffer = [UInt8](repeating: 0, count: bufferSize)
+            packetBuffer.withUnsafeMutableBytes { rawBuffer in
+                guard let packetListPointer = rawBuffer.baseAddress?.assumingMemoryBound(to: MIDIPacketList.self) else {
+                    return
+                }
+
+                let startPacket = MIDIPacketListInit(packetListPointer)
+                _ = MIDIPacketListAdd(packetListPointer, bufferSize, startPacket, 0, bytes.count, bytes)
+                MIDISend(realtimeOutputPort, destination.endpoint, packetListPointer)
             }
 
-            let startPacket = MIDIPacketListInit(packetListPointer)
-            _ = MIDIPacketListAdd(packetListPointer, bufferSize, startPacket, 0, bytes.count, bytes)
-            MIDISend(realtimeOutputPort, destination, packetListPointer)
+            return ImmediateForwardResult(
+                destinationName: destination.name,
+                bytesDescription: "[" + bytes.map { String(format: "%02X", $0) }.joined(separator: " ") + "]"
+            )
         }
-
-        return ImmediateForwardResult(
-            destinationName: realtimeSelectedDestinationName,
-            bytesDescription: "[" + bytes.map { String(format: "%02X", $0) }.joined(separator: " ") + "]"
-        )
     }
 
-    private func send(bytes: [UInt8]) {
-        guard let selectedDestinationID,
-              let destination = destinationByID[selectedDestinationID]?.endpoint else {
+    private func send(bytes: [UInt8], excluding sourceEndpoint: MIDIEndpointRef? = nil) {
+        let selectedDestinations = selectedDestinationIDs.compactMap { uniqueID -> SelectedDestination? in
+            guard let destination = destinationByID[uniqueID]?.endpoint,
+                  let destinationName = destinations.first(where: { $0.uniqueID == uniqueID })?.name else {
+                return nil
+            }
+            return SelectedDestination(uniqueID: uniqueID, endpoint: destination, name: destinationName)
+        }
+
+        let routableDestinations = selectedDestinations.filter { destination in
+            guard let sourceEndpoint else { return true }
+            return sourceEndpoint != destination.endpoint
+        }
+
+        guard !routableDestinations.isEmpty else {
             return
         }
 
-        let bufferSize = 1024
-        var packetBuffer = [UInt8](repeating: 0, count: bufferSize)
-        packetBuffer.withUnsafeMutableBytes { rawBuffer in
-            guard let packetListPointer = rawBuffer.baseAddress?.assumingMemoryBound(to: MIDIPacketList.self) else {
-                return
+        for destination in routableDestinations {
+            let bufferSize = 1024
+            var packetBuffer = [UInt8](repeating: 0, count: bufferSize)
+            packetBuffer.withUnsafeMutableBytes { rawBuffer in
+                guard let packetListPointer = rawBuffer.baseAddress?.assumingMemoryBound(to: MIDIPacketList.self) else {
+                    return
+                }
+
+                let startPacket = MIDIPacketListInit(packetListPointer)
+                _ = MIDIPacketListAdd(packetListPointer, bufferSize, startPacket, 0, bytes.count, bytes)
+                MIDISend(outputPort, destination.endpoint, packetListPointer)
             }
 
-            let startPacket = MIDIPacketListInit(packetListPointer)
-            _ = MIDIPacketListAdd(packetListPointer, bufferSize, startPacket, 0, bytes.count, bytes)
-            MIDISend(outputPort, destination, packetListPointer)
+            recordDestinationActivity(destination.uniqueID, message: "[\(hex(bytes))]")
+            appendOutputLog("\(destination.name): [" + hex(bytes) + "]")
         }
-
-        recordDestinationActivity(selectedDestinationID, message: "[\(hex(bytes))]")
-        appendOutputLog("\(selectedDestinationName): [" + hex(bytes) + "]")
     }
 
     private static func packetBytes(from packetList: UnsafePointer<MIDIPacketList>) -> [[UInt8]] {
@@ -694,23 +777,6 @@ final class MIDIMonitor: ObservableObject {
         var value: Int32 = 0
         MIDIObjectGetIntegerProperty(object, property, &value)
         return value
-    }
-
-    private func shouldForward(from sourceDescriptor: MIDIEndpointDescriptor?) -> Bool {
-        guard let selectedDestinationID,
-              let destinationDescriptor = destinationByID[selectedDestinationID] else {
-            return false
-        }
-        guard let sourceDescriptor else {
-            return true
-        }
-
-        if sourceDescriptor.endpoint == destinationDescriptor.endpoint {
-            footerStatus = "Suppressed MIDI Thru loop back into the same endpoint: \(selectedDestinationName)."
-            return false
-        }
-
-        return true
     }
 
     private func endpointDescriptor(for endpoint: MIDIEndpointRef) -> MIDIEndpointDescriptor {
@@ -787,62 +853,63 @@ final class MIDIMonitor: ObservableObject {
                 name: diagnostic.name,
                 entityUniqueID: diagnostic.entityUniqueID,
                 deviceUniqueID: diagnostic.deviceUniqueID,
-                isSelected: diagnostic.endpointUniqueID == selectedDestinationID,
+                isSelected: selectedDestinationIDs.contains(diagnostic.endpointUniqueID),
                 activity: destinationActivityByID[diagnostic.endpointUniqueID]?.diagnosticActivity
             )
         }
     }
 
-    private func persistSelectedDestination() {
+    private func persistSelectedDestinations() {
         let defaults = UserDefaults.standard
-
-        guard let selectedDestinationID,
-              let destination = destinations.first(where: { $0.uniqueID == selectedDestinationID }) else {
-            defaults.removeObject(forKey: DefaultsKey.selectedDestinationID)
-            defaults.removeObject(forKey: DefaultsKey.selectedDestinationName)
-            return
+        let selectedNames = selectedDestinationIDs.compactMap { uniqueID in
+            destinations.first(where: { $0.uniqueID == uniqueID })?.name
         }
-
-        defaults.set(Int(selectedDestinationID), forKey: DefaultsKey.selectedDestinationID)
-        defaults.set(destination.name, forKey: DefaultsKey.selectedDestinationName)
+        defaults.set(selectedDestinationIDs.map(Int.init), forKey: DefaultsKey.selectedDestinationIDs)
+        defaults.set(selectedNames, forKey: DefaultsKey.selectedDestinationNames)
     }
 
     private func restoreSelectedDestinationPreference() {
         let defaults = UserDefaults.standard
-        guard defaults.object(forKey: DefaultsKey.selectedDestinationID) != nil else {
-            selectedDestinationID = nil
-            return
+        if let savedIDs = defaults.array(forKey: DefaultsKey.selectedDestinationIDs) as? [Int] {
+            selectedDestinationIDs = savedIDs.map(MIDIUniqueID.init)
+        } else if defaults.object(forKey: DefaultsKey.selectedDestinationID) != nil {
+            selectedDestinationIDs = [MIDIUniqueID(defaults.integer(forKey: DefaultsKey.selectedDestinationID))]
+        } else {
+            selectedDestinationIDs = []
         }
-
-        selectedDestinationID = MIDIUniqueID(defaults.integer(forKey: DefaultsKey.selectedDestinationID))
     }
 
-    private func restoreSelectedDestinationIfPossible() {
-        guard !destinations.isEmpty else {
-            selectedDestinationID = nil
-            return
-        }
-
-        if let selectedDestinationID, destinationByID[selectedDestinationID] != nil {
-            return
-        }
-
+    private func restoreSelectedDestinationsIfPossible() {
         let defaults = UserDefaults.standard
-        if defaults.object(forKey: DefaultsKey.selectedDestinationID) != nil {
-            let savedID = MIDIUniqueID(defaults.integer(forKey: DefaultsKey.selectedDestinationID))
-            if destinationByID[savedID] != nil {
-                selectedDestinationID = savedID
-                return
-            }
+
+        let savedIDs: [MIDIUniqueID]
+        if let savedArray = defaults.array(forKey: DefaultsKey.selectedDestinationIDs) as? [Int] {
+            savedIDs = savedArray.map(MIDIUniqueID.init)
+        } else if defaults.object(forKey: DefaultsKey.selectedDestinationID) != nil {
+            savedIDs = [MIDIUniqueID(defaults.integer(forKey: DefaultsKey.selectedDestinationID))]
+        } else {
+            savedIDs = []
         }
 
-        if let savedName = defaults.string(forKey: DefaultsKey.selectedDestinationName),
-           let matchingDestination = destinations.first(where: { $0.name == savedName }) {
-            selectedDestinationID = matchingDestination.uniqueID
+        let restoredByID = savedIDs.filter { destinationByID[$0] != nil }
+        if !restoredByID.isEmpty {
+            selectedDestinationIDs = restoredByID
             return
         }
 
-        selectedDestinationID = nil
+        let savedNames: [String]
+        if let savedNameArray = defaults.array(forKey: DefaultsKey.selectedDestinationNames) as? [String] {
+            savedNames = savedNameArray
+        } else if let savedName = defaults.string(forKey: DefaultsKey.selectedDestinationName) {
+            savedNames = [savedName]
+        } else {
+            savedNames = []
+        }
+
+        let restoredByName = savedNames.compactMap { savedName in
+            destinations.first(where: { $0.name == savedName })?.uniqueID
+        }
+        selectedDestinationIDs = Array(NSOrderedSet(array: restoredByName)) as? [MIDIUniqueID] ?? restoredByName
     }
 
     private func recordSourceActivity(_ uniqueID: MIDIUniqueID, message: String, parsedMessage: ParsedMIDIMessage, repeatWarning: String?) {
