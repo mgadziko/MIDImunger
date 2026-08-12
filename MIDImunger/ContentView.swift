@@ -419,8 +419,8 @@ private struct RoutingPanel: View {
             }
 
             HStack(alignment: .top, spacing: 14) {
-                InputsPanel(monitor: monitor)
-                OutputsPanel(monitor: monitor)
+                InputsPanel(rows: alignedRows, monitor: monitor)
+                OutputsPanel(rows: alignedRows, monitor: monitor)
             }
         }
         .padding(12)
@@ -433,9 +433,32 @@ private struct RoutingPanel: View {
                 )
         )
     }
+
+    private var alignedRows: [RoutingAlignmentRow] {
+        let groupedInputs = Dictionary(grouping: monitor.inputSources, by: \.name)
+        let groupedOutputs = Dictionary(grouping: monitor.destinations, by: \.name)
+        let sortedNames = Set(groupedInputs.keys)
+            .union(groupedOutputs.keys)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+        return sortedNames.flatMap { name in
+            let inputs = groupedInputs[name, default: []]
+            let outputs = groupedOutputs[name, default: []]
+            let rowCount = max(inputs.count, outputs.count)
+
+            return (0..<rowCount).map { index in
+                RoutingAlignmentRow(
+                    id: "\(name)-\(index)",
+                    input: inputs.indices.contains(index) ? inputs[index] : nil,
+                    output: outputs.indices.contains(index) ? outputs[index] : nil
+                )
+            }
+        }
+    }
 }
 
 private struct InputsPanel: View {
+    let rows: [RoutingAlignmentRow]
     @ObservedObject var monitor: MIDIMonitor
 
     var body: some View {
@@ -444,21 +467,27 @@ private struct InputsPanel: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            if monitor.inputSources.isEmpty {
+            if rows.isEmpty {
                 Text("No CoreMIDI sources found.")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
             } else {
-                ForEach(monitor.inputSources) { source in
-                    Toggle(
-                        source.name,
-                        isOn: Binding(
-                            get: { source.isEnabled },
-                            set: { monitor.setInputSourceEnabled(source.uniqueID, isEnabled: $0) }
+                ForEach(rows) { row in
+                    if let source = row.input {
+                        Toggle(
+                            source.name,
+                            isOn: Binding(
+                                get: { source.isEnabled },
+                                set: { monitor.setInputSourceEnabled(source.uniqueID, isEnabled: $0) }
+                            )
                         )
-                    )
-                    .toggleStyle(.checkbox)
-                    .font(.subheadline.weight(.medium))
+                        .toggleStyle(.checkbox)
+                        .font(.subheadline.weight(.medium))
+                    } else {
+                        Color.clear
+                            .frame(height: 22)
+                            .accessibilityHidden(true)
+                    }
                 }
             }
         }
@@ -498,6 +527,7 @@ private struct HeaderPanel: View {
 }
 
 private struct OutputsPanel: View {
+    let rows: [RoutingAlignmentRow]
     @ObservedObject var monitor: MIDIMonitor
 
     var body: some View {
@@ -506,21 +536,27 @@ private struct OutputsPanel: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            if monitor.destinations.isEmpty {
+            if rows.isEmpty {
                 Text("No CoreMIDI destinations found.")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
             } else {
-                ForEach(monitor.destinations) { destination in
-                    Toggle(
-                        destination.name,
-                        isOn: Binding(
-                            get: { monitor.selectedDestinationIDs.contains(destination.uniqueID) },
-                            set: { monitor.setDestinationEnabled(destination.uniqueID, isEnabled: $0) }
+                ForEach(rows) { row in
+                    if let destination = row.output {
+                        Toggle(
+                            destination.name,
+                            isOn: Binding(
+                                get: { monitor.selectedDestinationIDs.contains(destination.uniqueID) },
+                                set: { monitor.setDestinationEnabled(destination.uniqueID, isEnabled: $0) }
+                            )
                         )
-                    )
-                    .toggleStyle(.checkbox)
-                    .font(.subheadline.weight(.medium))
+                        .toggleStyle(.checkbox)
+                        .font(.subheadline.weight(.medium))
+                    } else {
+                        Color.clear
+                            .frame(height: 22)
+                            .accessibilityHidden(true)
+                    }
                 }
 
                 if monitor.selectedDestinationIDs.isEmpty {
@@ -532,6 +568,12 @@ private struct OutputsPanel: View {
         }
         .frame(maxWidth: 320, alignment: .leading)
     }
+}
+
+private struct RoutingAlignmentRow: Identifiable {
+    let id: String
+    let input: MIDIInputSourceOption?
+    let output: MIDIEndpointOption?
 }
 
 private struct ChannelRowView: View {

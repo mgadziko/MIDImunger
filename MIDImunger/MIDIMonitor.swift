@@ -548,6 +548,13 @@ final class MIDIMonitor: ObservableObject {
             enabledSourceCount += 1
         }
 
+        inputSources.sort { lhs, rhs in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+        sourceDiagnostics.sort { lhs, rhs in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+
         footerStatus = sourceCount == 0
             ? "No MIDI input sources are available."
             : "Listening to \(enabledSourceCount) of \(sourceCount) MIDI source\(sourceCount == 1 ? "" : "s")."
@@ -586,6 +593,12 @@ final class MIDIMonitor: ObservableObject {
                     activity: destinationActivityByID[uniqueID]?.diagnosticActivity
                 )
             )
+        }
+        destinations.sort { lhs, rhs in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+        destinationDiagnostics.sort { lhs, rhs in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
         restoreSelectedDestinationsIfPossible()
         updateDestinationSelectionDiagnostics()
