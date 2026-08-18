@@ -237,6 +237,9 @@ final class MIDIMonitor: ObservableObject {
     @Published var lastReceivedPitchBend: Int?
     @Published var lastReceivedModulation: Int?
     @Published var lastReceivedOutputVolume: Int?
+    @Published var controlChangeValues: [Int: Int] = [:]
+    @Published var controlChangeChannels: [Int: Int] = [:]
+    @Published var activeHighControlChangeRowStarts: [Int] = []
 
     private var client = MIDIClientRef()
     private var inputPort = MIDIPortRef()
@@ -298,6 +301,21 @@ final class MIDIMonitor: ObservableObject {
 
     var latestOutputVolumeText: String {
         ledText(for: lastReceivedOutputVolume)
+    }
+
+    func controlChangeText(for controller: Int) -> String {
+        guard (0...127).contains(controller) else { return "---" }
+        return ledText(for: controlChangeValues[controller])
+    }
+
+    func controlChangeChannelText(for controller: Int) -> String {
+        guard (0...127).contains(controller) else { return "--" }
+        guard let channel = controlChangeChannels[controller] else { return "--" }
+        return ledText(for: channel + 1, digits: 2)
+    }
+
+    var visibleControlChangeRowStarts: [Int] {
+        [0, 8] + activeHighControlChangeRowStarts
     }
 
     var selectedDestinationName: String {
@@ -662,6 +680,12 @@ final class MIDIMonitor: ObservableObject {
             state.lastModulation = lastModulation
             lastReceivedModulation = lastModulation
         }
+        if let controller = message.controlChangeNumber,
+           let value = message.controlChangeValue {
+            controlChangeValues[controller] = value
+            controlChangeChannels[controller] = channel
+            noteControlChangeActivity(for: controller)
+        }
 
         if let lastPlayedNote = message.lastPlayedNote {
             lastReceivedNote = lastPlayedNote
@@ -671,6 +695,17 @@ final class MIDIMonitor: ObservableObject {
         }
 
         channelStates[channel] = state
+    }
+
+    private func noteControlChangeActivity(for controller: Int) {
+        guard (16...127).contains(controller) else { return }
+
+        let rowStart = (controller / 8) * 8
+        guard rowStart > 8 else { return }
+        guard !activeHighControlChangeRowStarts.contains(rowStart) else { return }
+
+        activeHighControlChangeRowStarts.append(rowStart)
+        activeHighControlChangeRowStarts.sort()
     }
 
     private func forward(bytes: [UInt8], from sourceDescriptor: MIDIEndpointDescriptor?) {
@@ -1061,6 +1096,8 @@ private struct ParsedMIDIMessage {
     var lastAftertouch: Int?
     var lastPitchBend: Int?
     var lastModulation: Int?
+    var controlChangeNumber: Int?
+    var controlChangeValue: Int?
     var lastPlayedNote: Int?
     var lastPlayedVelocity: Int?
     var isNoteOn: Bool
@@ -1177,6 +1214,8 @@ private struct MIDIByteStreamParser {
                 lastAftertouch: nil,
                 lastPitchBend: nil,
                 lastModulation: nil,
+                controlChangeNumber: nil,
+                controlChangeValue: nil,
                 lastPlayedNote: nil,
                 lastPlayedVelocity: nil,
                 isNoteOn: false
@@ -1197,6 +1236,8 @@ private struct MIDIByteStreamParser {
                 lastAftertouch: nil,
                 lastPitchBend: nil,
                 lastModulation: nil,
+                controlChangeNumber: nil,
+                controlChangeValue: nil,
                 lastPlayedNote: velocity == 0 ? nil : note,
                 lastPlayedVelocity: velocity == 0 ? nil : velocity,
                 isNoteOn: velocity != 0
@@ -1216,6 +1257,8 @@ private struct MIDIByteStreamParser {
                 lastAftertouch: pressure,
                 lastPitchBend: nil,
                 lastModulation: nil,
+                controlChangeNumber: nil,
+                controlChangeValue: nil,
                 lastPlayedNote: nil,
                 lastPlayedVelocity: nil,
                 isNoteOn: false
@@ -1236,6 +1279,8 @@ private struct MIDIByteStreamParser {
                 lastAftertouch: nil,
                 lastPitchBend: nil,
                 lastModulation: controller == 1 ? value : nil,
+                controlChangeNumber: controller,
+                controlChangeValue: value,
                 lastPlayedNote: nil,
                 lastPlayedVelocity: nil,
                 isNoteOn: false
@@ -1254,6 +1299,8 @@ private struct MIDIByteStreamParser {
                 lastAftertouch: nil,
                 lastPitchBend: nil,
                 lastModulation: nil,
+                controlChangeNumber: nil,
+                controlChangeValue: nil,
                 lastPlayedNote: nil,
                 lastPlayedVelocity: nil,
                 isNoteOn: false
@@ -1272,6 +1319,8 @@ private struct MIDIByteStreamParser {
                 lastAftertouch: pressure,
                 lastPitchBend: nil,
                 lastModulation: nil,
+                controlChangeNumber: nil,
+                controlChangeValue: nil,
                 lastPlayedNote: nil,
                 lastPlayedVelocity: nil,
                 isNoteOn: false
@@ -1292,6 +1341,8 @@ private struct MIDIByteStreamParser {
                 lastAftertouch: nil,
                 lastPitchBend: bend,
                 lastModulation: nil,
+                controlChangeNumber: nil,
+                controlChangeValue: nil,
                 lastPlayedNote: nil,
                 lastPlayedVelocity: nil,
                 isNoteOn: false
@@ -1309,6 +1360,8 @@ private struct MIDIByteStreamParser {
                 lastAftertouch: nil,
                 lastPitchBend: nil,
                 lastModulation: nil,
+                controlChangeNumber: nil,
+                controlChangeValue: nil,
                 lastPlayedNote: nil,
                 lastPlayedVelocity: nil,
                 isNoteOn: false
@@ -1329,6 +1382,8 @@ private struct MIDIByteStreamParser {
             lastAftertouch: nil,
             lastPitchBend: nil,
             lastModulation: nil,
+            controlChangeNumber: nil,
+            controlChangeValue: nil,
             lastPlayedNote: nil,
             lastPlayedVelocity: nil,
             isNoteOn: false

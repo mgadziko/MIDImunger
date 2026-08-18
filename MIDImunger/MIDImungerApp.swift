@@ -5,15 +5,20 @@ import SwiftUI
 struct MIDImungerApp: App {
     @StateObject private var monitor = MIDIMonitor()
     @NSApplicationDelegateAdaptor(MIDImungerAppDelegate.self) private var appDelegate
+    private let minimumWindowSize = NSSize(width: 1560, height: 860)
 
     var body: some Scene {
         WindowGroup {
             ContentView(monitor: monitor)
-                .frame(minWidth: 1240, minHeight: 860)
+                .frame(minWidth: minimumWindowSize.width, minHeight: minimumWindowSize.height)
                 .onAppear {
                     appDelegate.monitor = monitor
+                    appDelegate.minimumWindowSize = minimumWindowSize
+                    appDelegate.enforceWindowSizing()
                 }
         }
+        .defaultSize(width: minimumWindowSize.width, height: minimumWindowSize.height)
+        .windowResizability(.contentMinSize)
 
         Settings {
             PreferencesView()
@@ -50,6 +55,66 @@ struct MIDImungerApp: App {
 @MainActor
 final class MIDImungerAppDelegate: NSObject, NSApplicationDelegate {
     weak var monitor: MIDIMonitor?
+    var minimumWindowSize = NSSize(width: 1560, height: 860)
+    private var observers: [NSObjectProtocol] = []
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let center = NotificationCenter.default
+
+        observers.append(
+            center.addObserver(
+                forName: NSWindow.didBecomeMainNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                self?.enforceWindowSizing(for: window)
+            }
+        )
+
+        observers.append(
+            center.addObserver(
+                forName: NSWindow.didEndLiveResizeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                self?.enforceWindowSizing(for: window)
+            }
+        )
+
+        DispatchQueue.main.async { [weak self] in
+            self?.enforceWindowSizing()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        let center = NotificationCenter.default
+        observers.forEach(center.removeObserver)
+        observers.removeAll()
+    }
+
+    func enforceWindowSizing() {
+        NSApp.windows.forEach(enforceWindowSizing(for:))
+    }
+
+    func enforceWindowSizing(for window: NSWindow) {
+        guard window.title.localizedCaseInsensitiveContains("MIDImunger") || window.identifier?.rawValue.contains("MIDImunger") == true else {
+            return
+        }
+
+        window.minSize = minimumWindowSize
+
+        var frame = window.frame
+        let widthChanged = frame.size.width < minimumWindowSize.width
+        let heightChanged = frame.size.height < minimumWindowSize.height
+
+        guard widthChanged || heightChanged else { return }
+
+        frame.size.width = max(frame.size.width, minimumWindowSize.width)
+        frame.size.height = max(frame.size.height, minimumWindowSize.height)
+        window.setFrame(frame, display: true, animate: false)
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let monitor, monitor.shouldPromptToSaveLogsOnQuit else {

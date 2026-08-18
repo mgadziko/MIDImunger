@@ -7,39 +7,49 @@ struct ContentView: View {
     @AppStorage("showOutputLog") private var showOutputLog = true
     @AppStorage("showRouteInspector") private var showRouteInspector = true
 
+    private let sectionSpacing: CGFloat = 16
+    private let outerWindowGutter: CGFloat = 24
+
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                header
 
-            Divider()
+                Divider()
 
-            signalToolbar
+                ScrollView {
+                    HStack(alignment: .top, spacing: 0) {
+                        VStack(spacing: sectionSpacing) {
+                            performanceInspectorSection
+                            controlChangeSection
+                            channelInspectorSection
 
-            Divider()
+                            if showRouteInspector {
+                                diagnosticSection
+                            }
 
-            ScrollView {
-                VStack(spacing: 10) {
-                    channelGrid
+                            if showInputLog {
+                                inputLogPanel
+                            }
 
-                    if showRouteInspector {
-                        diagnosticPanel
+                            if showOutputLog {
+                                outputLogPanel
+                            }
+                        }
+                        Spacer(minLength: 0)
                     }
-
-                    if showInputLog {
-                        inputLogPanel
-                    }
-
-                    if showOutputLog {
-                        outputLogPanel
-                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                .padding(16)
+                .background(Color(nsColor: .windowBackgroundColor))
+
+                Divider()
+
+                footer
             }
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            footer
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, outerWindowGutter)
+            .padding(.trailing, outerWindowGutter)
         }
         .background(
             LinearGradient(
@@ -62,6 +72,73 @@ struct ContentView: View {
         }
     }
 
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                TitledSection(title: "Routing") {
+                    RoutingPanel(monitor: monitor)
+                }
+
+                TitledSection(title: "Activity Scope") {
+                    HeaderPanel(
+                        bodyText: "The LED strip below shows the latest value received on any MIDI channel."
+                    )
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var performanceInspectorSection: some View {
+        TitledSection(title: "Performance Inspector") {
+            signalToolbar
+        }
+    }
+
+    private var controlChangeSection: some View {
+        TitledSection(title: "Control Change Inspector") {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(monitor.visibleControlChangeRowStarts, id: \.self) { rowStart in
+                    controlChangeRow(controllers: Array(rowStart...(rowStart + 7)))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(sectionPanelBackground)
+        }
+    }
+
+    private func controlChangeRow(controllers: [Int]) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(controllers, id: \.self) { controller in
+                HStack(alignment: .top, spacing: 4) {
+                    ReadOnlyLEDValue(
+                        label: "CC\(controller)",
+                        value: monitor.controlChangeText(for: controller),
+                        width: 78
+                    )
+                    ReadOnlyLEDValue(
+                        label: "Ch",
+                        value: monitor.controlChangeChannelText(for: controller),
+                        width: 52
+                    )
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 8)
+                .background(controlChangePairBackground)
+            }
+        }
+    }
+
+    private var channelInspectorSection: some View {
+        TitledSection(title: "Channel Inspector") {
+            channelGrid
+        }
+    }
+
     private var channelGrid: some View {
         HStack(alignment: .top, spacing: 12) {
             channelColumn(states: Array(monitor.channelStates.prefix(8)))
@@ -76,20 +153,6 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
-    }
-
-    private var header: some View {
-        HStack(alignment: .top, spacing: 14) {
-            RoutingPanel(monitor: monitor)
-
-            HeaderPanel(
-                title: "Activity Scope",
-                bodyText: "The LED strip below shows the latest value received on any MIDI channel."
-            )
-
-            Spacer(minLength: 0)
-        }
-        .padding(16)
     }
 
     private var signalToolbar: some View {
@@ -121,7 +184,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(Color.black.opacity(0.12))
+        .background(sectionPanelBackground)
     }
 
     private var footer: some View {
@@ -231,12 +294,14 @@ struct ContentView: View {
         .background(Color.black.opacity(0.10))
     }
 
+    private var diagnosticSection: some View {
+        TitledSection(title: "MIDI Route Inspector") {
+            diagnosticPanel
+        }
+    }
+
     private var diagnosticPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("MIDI Route Inspector")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
             Text("Selected Thru: \(monitor.selectedDestinationDiagnosticText)")
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundStyle(.white)
@@ -248,21 +313,12 @@ struct ContentView: View {
             }
         }
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color.white.opacity(0.07))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
+        .background(sectionCardBackground)
     }
 
     private func diagnosticColumn(title: String, endpoints: [MIDIRouteDiagnostic]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            BlueSectionTitle(title)
 
             if endpoints.isEmpty {
                 Text("None detected.")
@@ -396,6 +452,63 @@ struct ContentView: View {
     private func diagnosticValue(_ value: MIDIUniqueID?) -> String {
         value.map(String.init) ?? "-"
     }
+
+    private var sectionPanelBackground: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .fill(Color.white.opacity(0.08))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+    }
+
+    private var sectionCardBackground: some View {
+        RoundedRectangle(cornerRadius: 14)
+            .fill(Color.white.opacity(0.07))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+    }
+
+    private var controlChangePairBackground: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .fill(Color.black.opacity(0.20))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
+            )
+    }
+}
+
+private struct TitledSection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            BlueSectionTitle(title)
+            content
+                .padding(.leading, 24)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct BlueSectionTitle: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(.blue)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 24)
+    }
 }
 
 private struct RoutingPanel: View {
@@ -404,10 +517,6 @@ private struct RoutingPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Routing")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
                 Spacer()
 
                 Button {
@@ -496,34 +605,25 @@ private struct InputsPanel: View {
 }
 
 private struct HeaderPanel: View {
-    var title: String
     var bodyText: String
 
-    var bodyView: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text(bodyText)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-        }
-        .padding(12)
-        .frame(maxWidth: 320, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
+    var body: some View {
+        Text(bodyText)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.primary)
+            .lineLimit(2)
+            .truncationMode(.middle)
+            .padding(12)
+            .frame(maxWidth: 320, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
+            )
     }
-
-    var body: some View { bodyView }
 }
 
 private struct OutputsPanel: View {
