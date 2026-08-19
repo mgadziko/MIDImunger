@@ -20,7 +20,6 @@ struct ContentView: View {
                 ScrollView {
                     HStack(alignment: .top, spacing: 0) {
                         VStack(spacing: sectionSpacing) {
-                            performanceInspectorSection
                             controlChangeSection
                             channelInspectorSection
 
@@ -73,17 +72,19 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 14) {
-            HStack(alignment: .top, spacing: 14) {
-                TitledSection(title: "Routing") {
-                    RoutingPanel(monitor: monitor)
-                }
+        HStack(alignment: .top, spacing: 18) {
+            TitledSection(title: "Routing") {
+                RoutingPanel(monitor: monitor)
+            }
+            .frame(maxWidth: 380, alignment: .topLeading)
 
-                TitledSection(title: "Activity Scope") {
-                    HeaderPanel(
-                        bodyText: "The LED strip below shows the latest value received on any MIDI channel."
-                    )
+            VStack(alignment: .leading, spacing: sectionSpacing) {
+                TitledSection(title: "Reset") {
+                    resetPanel
                 }
+                .frame(width: 192, alignment: .topLeading)
+
+                performanceInspectorSection
             }
             Spacer(minLength: 0)
         }
@@ -93,7 +94,7 @@ struct ContentView: View {
 
     private var performanceInspectorSection: some View {
         TitledSection(title: "Performance Inspector") {
-            signalToolbar
+            performanceInspectorPanel
         }
     }
 
@@ -116,7 +117,7 @@ struct ContentView: View {
             ForEach(controllers, id: \.self) { controller in
                 HStack(alignment: .top, spacing: 4) {
                     ReadOnlyLEDValue(
-                        label: "CC\(controller)",
+                        label: controlChangeLabel(for: controller),
                         value: monitor.controlChangeText(for: controller),
                         width: 78
                     )
@@ -130,6 +131,86 @@ struct ContentView: View {
                 .padding(.vertical, 8)
                 .background(controlChangePairBackground)
             }
+        }
+    }
+
+    private func controlChangeLabel(for controller: Int) -> String {
+        switch controller {
+        case 0: return "Bank\nSelect"
+        case 1: return "Modulation\nWheel"
+        case 2: return "Breath\nController"
+        case 4: return "Foot\nController"
+        case 5: return "Portamento\nTime"
+        case 6: return "Data\nEntry"
+        case 7: return "Output\nVolume"
+        case 8: return "Balance"
+        case 10: return "Pan"
+        case 11: return "Expression\nController"
+        case 12: return "Effect\nControl 1"
+        case 13: return "Effect\nControl 2"
+        case 16: return "General\nPurpose 1"
+        case 17: return "General\nPurpose 2"
+        case 18: return "General\nPurpose 3"
+        case 19: return "General\nPurpose 4"
+        case 32: return "Bank\nSelect LSB"
+        case 33: return "Modulation\nLSB"
+        case 34: return "Breath\nLSB"
+        case 36: return "Foot\nLSB"
+        case 37: return "Portamento\nLSB"
+        case 38: return "Data\nEntry LSB"
+        case 39: return "Volume\nLSB"
+        case 40: return "Balance\nLSB"
+        case 42: return "Pan\nLSB"
+        case 43: return "Expression\nLSB"
+        case 44: return "Effect 1\nLSB"
+        case 45: return "Effect 2\nLSB"
+        case 48: return "General 1\nLSB"
+        case 49: return "General 2\nLSB"
+        case 50: return "General 3\nLSB"
+        case 51: return "General 4\nLSB"
+        case 64: return "Sustain\nPedal"
+        case 65: return "Portamento\nOn/Off"
+        case 66: return "Sostenuto"
+        case 67: return "Soft\nPedal"
+        case 68: return "Legato\nFootswitch"
+        case 69: return "Hold 2"
+        case 70: return "Sound\nVariation"
+        case 71: return "Timbre\nResonance"
+        case 72: return "Release\nTime"
+        case 73: return "Attack\nTime"
+        case 74: return "Brightness"
+        case 75: return "Sound\nControl 6"
+        case 76: return "Sound\nControl 7"
+        case 77: return "Sound\nControl 8"
+        case 78: return "Sound\nControl 9"
+        case 79: return "Sound\nControl 10"
+        case 80: return "General\nPurpose 5"
+        case 81: return "General\nPurpose 6"
+        case 82: return "General\nPurpose 7"
+        case 83: return "General\nPurpose 8"
+        case 84: return "Portamento\nControl"
+        case 88: return "Velocity\nPrefix"
+        case 91: return "Effects 1\nDepth"
+        case 92: return "Effects 2\nDepth"
+        case 93: return "Effects 3\nDepth"
+        case 94: return "Effects 4\nDepth"
+        case 95: return "Effects 5\nDepth"
+        case 96: return "Data\nIncrement"
+        case 97: return "Data\nDecrement"
+        case 98: return "NRPN\nLSB"
+        case 99: return "NRPN\nMSB"
+        case 100: return "RPN\nLSB"
+        case 101: return "RPN\nMSB"
+        case 120: return "All Sound\nOff"
+        case 121: return "Reset All\nControllers"
+        case 122: return "Local\nControl"
+        case 123: return "All Notes\nOff"
+        case 124: return "Omni Off"
+        case 125: return "Omni On"
+        case 126: return "Mono\nMode On"
+        case 127: return "Poly\nMode On"
+        default:
+            return String(format: "CC%02d", controller)
         }
     }
 
@@ -155,35 +236,48 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .top)
     }
 
-    private var signalToolbar: some View {
-        HStack(alignment: .center, spacing: 12) {
-            ReadOnlyLEDValue(label: "Channel", value: monitor.latestChannelText, width: 78)
-            ReadOnlyLEDValue(label: "Program", value: monitor.latestProgramText, width: 78)
-            ReadOnlyLEDValue(label: "Last Note", value: monitor.latestNoteText, width: 78)
-            ReadOnlyLEDValue(label: "Velocity", value: monitor.latestVelocityText, width: 78)
-            ReadOnlyLEDValue(label: "Aftertouch", value: monitor.latestAftertouchText, width: 78)
-            ReadOnlyLEDValue(label: "Pitch Bend", value: monitor.latestPitchBendText, width: 106)
-            ReadOnlyLEDValue(label: "Modulation", value: monitor.latestModulationText, width: 78)
-            ReadOnlyLEDValue(label: "Output Volume", value: monitor.latestOutputVolumeText, width: 88)
+    private var performanceInspectorPanel: some View {
+        Grid(alignment: .center, horizontalSpacing: 12, verticalSpacing: 12) {
+            GridRow {
+                performanceInspectorCell(label: "Channel", value: monitor.latestChannelText, width: 78)
+                performanceInspectorCell(label: "Program", value: monitor.latestProgramText, width: 78)
+                performanceInspectorCell(label: "Last Note", value: monitor.latestNoteText, width: 78)
+                performanceInspectorCell(label: "Velocity", value: monitor.latestVelocityText, width: 78)
+            }
 
-            Spacer(minLength: 8)
-
-            VStack(spacing: 8) {
-                Button("All Notes Off") {
-                    monitor.sendAllNotesOff()
-                }
-                .controlSize(.large)
-                .frame(width: 168)
-
-                Button("DX Play") {
-                    monitor.sendDXPlay()
-                }
-                .controlSize(.large)
-                .frame(width: 168)
+            GridRow {
+                performanceInspectorCell(label: "Aftertouch", value: monitor.latestAftertouchText, width: 78)
+                performanceInspectorCell(label: "Pitch Bend", value: monitor.latestPitchBendText, width: 106)
+                performanceInspectorCell(label: "Modulation", value: monitor.latestModulationText, width: 78)
+                performanceInspectorCell(label: "Output Volume", value: monitor.latestOutputVolumeText, width: 88)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .background(sectionPanelBackground)
+    }
+
+    private func performanceInspectorCell(label: String, value: String, width: CGFloat) -> some View {
+        ReadOnlyLEDValue(label: label, value: value, width: width)
+            .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var resetPanel: some View {
+        VStack(spacing: 10) {
+            Button("All Notes Off") {
+                monitor.sendAllNotesOff()
+            }
+            .controlSize(.large)
+            .frame(width: 168)
+
+            Button("DX Play") {
+                monitor.sendDXPlay()
+            }
+            .controlSize(.large)
+            .frame(width: 168)
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
         .background(sectionPanelBackground)
     }
 
