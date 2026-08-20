@@ -4,6 +4,8 @@ struct ReadOnlyLEDValue: View {
     var label: String
     var value: String
     var width: CGFloat = 82
+    var labelLineLimit: Int = 2
+    var labelHeight: CGFloat = 28
 
     var body: some View {
         VStack(spacing: 5) {
@@ -13,9 +15,9 @@ struct ReadOnlyLEDValue: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.primary)
                 .multilineTextAlignment(.center)
-                .lineLimit(2)
+                .lineLimit(labelLineLimit)
                 .minimumScaleFactor(0.75)
-                .frame(width: width, height: 28, alignment: .top)
+                .frame(width: width, height: labelHeight, alignment: .top)
         }
         .frame(width: width)
     }

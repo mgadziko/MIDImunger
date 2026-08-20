@@ -318,6 +318,13 @@ final class MIDIMonitor: ObservableObject {
         [0, 8] + activeHighControlChangeRowStarts
     }
 
+    func clearControlChangeInspector() {
+        controlChangeValues.removeAll()
+        controlChangeChannels.removeAll()
+        activeHighControlChangeRowStarts.removeAll()
+        footerStatus = "Cleared Control Change Inspector."
+    }
+
     var selectedDestinationName: String {
         let selectedNames = selectedDestinationIDs.compactMap { uniqueID in
             destinations.first(where: { $0.uniqueID == uniqueID })?.name

@@ -99,7 +99,16 @@ struct ContentView: View {
     }
 
     private var controlChangeSection: some View {
-        TitledSection(title: "Control Change Inspector") {
+        TitledSection(
+            title: "Control Change Inspector",
+            trailing: {
+                Button("Clear Control Change Inspector") {
+                    monitor.clearControlChangeInspector()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        ) {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(monitor.visibleControlChangeRowStarts, id: \.self) { rowStart in
                     controlChangeRow(controllers: Array(rowStart...(rowStart + 7)))
@@ -119,7 +128,9 @@ struct ContentView: View {
                     ReadOnlyLEDValue(
                         label: controlChangeLabel(for: controller),
                         value: monitor.controlChangeText(for: controller),
-                        width: 78
+                        width: 78,
+                        labelLineLimit: 3,
+                        labelHeight: 40
                     )
                     ReadOnlyLEDValue(
                         label: "Ch",
@@ -135,83 +146,88 @@ struct ContentView: View {
     }
 
     private func controlChangeLabel(for controller: Int) -> String {
-        switch controller {
-        case 0: return "Bank\nSelect"
-        case 1: return "Modulation\nWheel"
-        case 2: return "Breath\nController"
-        case 4: return "Foot\nController"
-        case 5: return "Portamento\nTime"
-        case 6: return "Data\nEntry"
-        case 7: return "Output\nVolume"
-        case 8: return "Balance"
-        case 10: return "Pan"
-        case 11: return "Expression\nController"
-        case 12: return "Effect\nControl 1"
-        case 13: return "Effect\nControl 2"
-        case 16: return "General\nPurpose 1"
-        case 17: return "General\nPurpose 2"
-        case 18: return "General\nPurpose 3"
-        case 19: return "General\nPurpose 4"
-        case 32: return "Bank\nSelect LSB"
-        case 33: return "Modulation\nLSB"
-        case 34: return "Breath\nLSB"
-        case 36: return "Foot\nLSB"
-        case 37: return "Portamento\nLSB"
-        case 38: return "Data\nEntry LSB"
-        case 39: return "Volume\nLSB"
-        case 40: return "Balance\nLSB"
-        case 42: return "Pan\nLSB"
-        case 43: return "Expression\nLSB"
-        case 44: return "Effect 1\nLSB"
-        case 45: return "Effect 2\nLSB"
-        case 48: return "General 1\nLSB"
-        case 49: return "General 2\nLSB"
-        case 50: return "General 3\nLSB"
-        case 51: return "General 4\nLSB"
-        case 64: return "Sustain\nPedal"
-        case 65: return "Portamento\nOn/Off"
-        case 66: return "Sostenuto"
-        case 67: return "Soft\nPedal"
-        case 68: return "Legato\nFootswitch"
-        case 69: return "Hold 2"
-        case 70: return "Sound\nVariation"
-        case 71: return "Timbre\nResonance"
-        case 72: return "Release\nTime"
-        case 73: return "Attack\nTime"
-        case 74: return "Brightness"
-        case 75: return "Sound\nControl 6"
-        case 76: return "Sound\nControl 7"
-        case 77: return "Sound\nControl 8"
-        case 78: return "Sound\nControl 9"
-        case 79: return "Sound\nControl 10"
-        case 80: return "General\nPurpose 5"
-        case 81: return "General\nPurpose 6"
-        case 82: return "General\nPurpose 7"
-        case 83: return "General\nPurpose 8"
-        case 84: return "Portamento\nControl"
-        case 88: return "Velocity\nPrefix"
-        case 91: return "Effects 1\nDepth"
-        case 92: return "Effects 2\nDepth"
-        case 93: return "Effects 3\nDepth"
-        case 94: return "Effects 4\nDepth"
-        case 95: return "Effects 5\nDepth"
-        case 96: return "Data\nIncrement"
-        case 97: return "Data\nDecrement"
-        case 98: return "NRPN\nLSB"
-        case 99: return "NRPN\nMSB"
-        case 100: return "RPN\nLSB"
-        case 101: return "RPN\nMSB"
-        case 120: return "All Sound\nOff"
-        case 121: return "Reset All\nControllers"
-        case 122: return "Local\nControl"
-        case 123: return "All Notes\nOff"
-        case 124: return "Omni Off"
-        case 125: return "Omni On"
-        case 126: return "Mono\nMode On"
-        case 127: return "Poly\nMode On"
-        default:
-            return String(format: "CC%02d", controller)
+        let baseLabel: String? = switch controller {
+        case 0: "Bank\nSelect"
+        case 1: "Modulation\nWheel"
+        case 2: "Breath\nController"
+        case 4: "Foot\nController"
+        case 5: "Portamento\nTime"
+        case 6: "Data\nEntry"
+        case 7: "Output\nVolume"
+        case 8: "Balance"
+        case 10: "Pan"
+        case 11: "Expression\nController"
+        case 12: "Effect\nControl 1"
+        case 13: "Effect\nControl 2"
+        case 16: "General\nPurpose 1"
+        case 17: "General\nPurpose 2"
+        case 18: "General\nPurpose 3"
+        case 19: "General\nPurpose 4"
+        case 32: "Bank\nSelect LSB"
+        case 33: "Modulation\nLSB"
+        case 34: "Breath\nLSB"
+        case 36: "Foot\nLSB"
+        case 37: "Portamento\nLSB"
+        case 38: "Data\nEntry LSB"
+        case 39: "Volume\nLSB"
+        case 40: "Balance\nLSB"
+        case 42: "Pan\nLSB"
+        case 43: "Expression\nLSB"
+        case 44: "Effect 1\nLSB"
+        case 45: "Effect 2\nLSB"
+        case 48: "General 1\nLSB"
+        case 49: "General 2\nLSB"
+        case 50: "General 3\nLSB"
+        case 51: "General 4\nLSB"
+        case 64: "Sustain\nPedal"
+        case 65: "Portamento\nOn/Off"
+        case 66: "Sostenuto"
+        case 67: "Soft\nPedal"
+        case 68: "Legato\nFootswitch"
+        case 69: "Hold 2"
+        case 70: "Sound\nVariation"
+        case 71: "Timbre\nResonance"
+        case 72: "Release\nTime"
+        case 73: "Attack\nTime"
+        case 74: "Brightness"
+        case 75: "Sound\nControl 6"
+        case 76: "Sound\nControl 7"
+        case 77: "Sound\nControl 8"
+        case 78: "Sound\nControl 9"
+        case 79: "Sound\nControl 10"
+        case 80: "General\nPurpose 5"
+        case 81: "General\nPurpose 6"
+        case 82: "General\nPurpose 7"
+        case 83: "General\nPurpose 8"
+        case 84: "Portamento\nControl"
+        case 88: "Velocity\nPrefix"
+        case 91: "Effects 1\nDepth"
+        case 92: "Effects 2\nDepth"
+        case 93: "Effects 3\nDepth"
+        case 94: "Effects 4\nDepth"
+        case 95: "Effects 5\nDepth"
+        case 96: "Data\nIncrement"
+        case 97: "Data\nDecrement"
+        case 98: "NRPN\nLSB"
+        case 99: "NRPN\nMSB"
+        case 100: "RPN\nLSB"
+        case 101: "RPN\nMSB"
+        case 120: "All Sound\nOff"
+        case 121: "Reset All\nControllers"
+        case 122: "Local\nControl"
+        case 123: "All Notes\nOff"
+        case 124: "Omni Off"
+        case 125: "Omni On"
+        case 126: "Mono\nMode On"
+        case 127: "Poly\nMode On"
+        default: nil
         }
+
+        let ccNumber = String(format: "CC%02d", controller)
+        guard let baseLabel else {
+            return ccNumber
+        }
+        return "\(ccNumber)\n\(baseLabel)"
     }
 
     private var channelInspectorSection: some View {
@@ -575,13 +591,28 @@ struct ContentView: View {
     }
 }
 
-private struct TitledSection<Content: View>: View {
+private struct TitledSection<Trailing: View, Content: View>: View {
     let title: String
+    let trailing: Trailing
     @ViewBuilder var content: Content
+
+    init(
+        title: String,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() },
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.trailing = trailing()
+        self.content = content()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            BlueSectionTitle(title)
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                BlueSectionTitle(title)
+                Spacer(minLength: 0)
+                trailing
+            }
             content
                 .padding(.leading, 24)
         }
